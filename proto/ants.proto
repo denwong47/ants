@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package ants;
+
+// The greeting service definition.
+service WorkerAnt {
+  rpc Ping (Empty) returns (PingReply) {}
+  rpc Reserve (Empty) returns (ReserveReply) {}
+  rpc Release (ReleaseRequest) returns (ReleaseReply) {}
+  rpc Work (WorkRequest) returns (WorkReply) {}
+}
+
+
+// An empty message
+message Empty {}
+
+// A reply indicating the status of a node.
+// This does not reserve the node - do not use this method to
+// check if a node is available.
+message PingReply {
+  int32 status = 1;
+}
+
+// A reply indicating the reservation result of a node.
+message ReserveReply {
+  bool success = 1;
+  uint64 token = 2;
+}
+
+// Send a message to release a node from awaiting work.
+message ReleaseRequest {
+  uint64 token = 1;
+}
+
+// A reply indicating if a release request was successful.
+message ReleaseReply {
+  bool success = 1;
+}
+
+// A request to do work.
+message WorkRequest {
+  uint64 token = 1;
+  string body = 2;
+  string host = 3;
+  uint32 port = 4;
+}
+
+// A reply for completion of work.
+message WorkReply {
+  uint64 token = 1;
+  bool success = 2;
+  string error = 3;
+  string body = 4;
+  string worker = 5;
+}
