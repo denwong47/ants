@@ -166,10 +166,9 @@ where
                     tokio::time::sleep(RESERVE_TIMEOUT - duration).await;
                 }
 
-                // Put the node back in the heap, but this time with a new timestamp.
-                self.add_node(address.clone()).await;
-
                 // this needs to contact the node and reserve it.
+                // Hold the node address during this step, preventing any other
+                // threads from attempting to reserve it.
                 let mut client = match tokio::select! {
                     _ = tokio::time::sleep(RESERVE_TIMEOUT) => {
                         Err(AntsError::ConnectionError(
@@ -182,8 +181,14 @@ where
                         connection_result
                     }
                 } {
-                    Ok(client) => client,
+                    Ok(client) => {
+                        // Put the node back in the heap, but this time with a new timestamp.
+                        self.add_node(address.clone()).await;
+                        client
+                    }
                     Err(err) => {
+                        // Put the node back in the heap, but this time with a new timestamp.
+                        self.add_node(address.clone()).await;
                         eprintln!(
                             "Failed to connect to node {}:{} due to {}, trying next node.",
                             &address.0, &address.1, err

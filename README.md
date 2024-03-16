@@ -37,6 +37,7 @@ of failure.
       clustered in the same subnet and have the same latency.
 - [ ] In the future, the nodes should discover each other using multicast, rather than
       a static list.
+- [ ] Integration and unit tests.
 
 ### Simple demo
 
