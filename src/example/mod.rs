@@ -1,6 +1,6 @@
 //! Structs and data classes that are only useful in the serve example.
-//! 
-//! 
+//!
+//!
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

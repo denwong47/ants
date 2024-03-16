@@ -1,8 +1,8 @@
 //! CLI configuration to parse CLI arguments.
-//! 
-//! 
-use clap::Parser;
+//!
+//!
 use crate::{AntsError, NodeAddress};
+use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
 pub struct CliArgs {
@@ -18,23 +18,17 @@ pub struct CliArgs {
 impl CliArgs {
     /// Return the nodes as a vector of [`NodeAddress`] instances.
     pub fn node_addresses(&self) -> Result<Vec<NodeAddress>, AntsError> {
-        Result::from_iter(
-            self.nodes
-            .iter()
-            .map(
-                // Convert a "0.0.0.0:50051" string to a NodeAddress instance.
-                |node| {
-                    let parts: Vec<&str> = node.split(':').collect();
-                    Ok(
-                        (
-                            parts[0].to_string(),
-                            parts[1].parse().map_err(
-                                |_| AntsError::InvalidNodeAddress(node.to_string())
-                            )?,
-                        )
-                    )
-                }
-            )
-        )
+        Result::from_iter(self.nodes.iter().map(
+            // Convert a "0.0.0.0:50051" string to a NodeAddress instance.
+            |node| {
+                let parts: Vec<&str> = node.split(':').collect();
+                Ok((
+                    parts[0].to_string(),
+                    parts[1]
+                        .parse()
+                        .map_err(|_| AntsError::InvalidNodeAddress(node.to_string()))?,
+                ))
+            },
+        ))
     }
 }

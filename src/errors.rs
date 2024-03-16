@@ -1,5 +1,5 @@
 //! Error types.
-//! 
+//!
 
 use thiserror::Error;
 

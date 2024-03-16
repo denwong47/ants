@@ -1,5 +1,5 @@
 //! Ants library.
-//! 
+//!
 
 mod config;
 pub use config::CliArgs;
