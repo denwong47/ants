@@ -117,6 +117,21 @@ where
         }
     }
 
+    /// Create a new worker wrapped in an [`Arc`].
+    ///
+    /// Since the [`Worker`] is expected to be static and not bound to any particular
+    /// scope, creating [`Arc`] wrapped instances is the most common way to use this
+    /// struct.
+    pub fn new_arc(
+        host: String,
+        port: u16,
+        nodes: Vec<NodeAddress>,
+        func: F,
+        timeout: tokio::time::Duration,
+    ) -> Arc<Self> {
+        Arc::new(Self::new(host, port, nodes, func, timeout))
+    }
+
     /// Get the name of this worker.
     pub fn name(&self) -> String {
         format!("worker://{}:{}", self.address.0, self.address.1)
@@ -251,7 +266,11 @@ where
                     }
                 });
 
-                eprintln!("Reserved node with token {}.", token);
+                eprintln!(
+                    "Reserved {name} with token {token}.",
+                    name = self.name(),
+                    token = token
+                );
                 Some(token)
             }
             Err(_) => None,

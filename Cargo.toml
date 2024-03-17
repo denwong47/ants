@@ -28,5 +28,8 @@ thiserror = "1.0.58"
 tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 tonic = "0.11.0"
 
+[dev-dependencies]
+futures = "0.3.30"
+
 [build-dependencies]
 tonic-build = "0.11.0"
