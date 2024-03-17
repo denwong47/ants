@@ -58,7 +58,7 @@ async fn test_multi_nodes(worker_count: usize) {
             eprintln!("Workers should be running now.");
 
             futures::future::join_all(
-                (0..worker_count)
+                (0..worker_count+1)
                 .map(
                     |_| Arc::clone(&inner_worker)
                 )
@@ -83,6 +83,7 @@ async fn test_multi_nodes(worker_count: usize) {
         })
         .collect::<std::collections::HashSet<_>>();
 
+    // Make sure all workers were used.
     assert_eq!(commissioned_workers.len(), worker_count);
 }
 

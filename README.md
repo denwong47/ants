@@ -1,3 +1,7 @@
+## Ants
+
+![Rust CI Badge](https://github.com/denwong47/ants/actions/workflows/rust-CI.yml/badge.svg?branch=master)
+
 A naive implementation of distributed system to do arbitrary work.
 
 In short, this is a cluster of API servers hosting identical image, each capable

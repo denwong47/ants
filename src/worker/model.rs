@@ -227,7 +227,16 @@ where
                 }
             } else {
                 // There is literally no nodes in the heap.
-                return Err(AntsError::NoNodesAvailable);
+                //
+                // This needs to be re-think - if all available nodes are checked out
+                // at once for reservation, should we just wait for one to be available?
+                eprintln!(
+                    "No nodes available in the heap at all. This could be due to all \
+                    nodes being checked out for reservation, or no nodes were added to \
+                    the Worker at the first place. We will wait for {RESERVE_TIMEOUT:?} \
+                    before trying again."
+                );
+                tokio::time::sleep(RESERVE_TIMEOUT).await;
             }
         }
 
