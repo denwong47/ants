@@ -7,7 +7,7 @@ use std::{
     collections::BinaryHeap,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
 };
 use tokio::sync::Mutex;
@@ -18,9 +18,12 @@ pub type NodeRecord = (tokio::time::Instant, NodeAddress);
 
 use super::{
     proto::{self, worker_ant_server::WorkerAnt as WorkerAntServerTrait},
-    token,
+    token as reservation_token,
 };
-use crate::AntsError;
+use crate::{
+    postbox::{traits::*, PostBox},
+    token as message_token, AntsError,
+};
 
 /// The timeout for reserving a node.
 ///
@@ -73,7 +76,15 @@ where
     pub busy: Arc<AtomicBool>,
     pub func: Box<F>,
     pub work_timeout: tokio::time::Duration,
+
+    pub postbox: Arc<PostBox>,
     _phantom: std::marker::PhantomData<(T, R)>,
+
+    /// An atomic cyclical reference to itself.
+    ///
+    /// This is used for the [`Worker`] to spawn tasks that can refer back to itself,
+    /// while respecting the ``'static`` lifetime of the [`Worker`].
+    _cyclical: OnceLock<Arc<Self>>,
 }
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
@@ -86,6 +97,11 @@ where
     Self: std::marker::Sync + std::marker::Send,
 {
     /// Create a new worker.
+    ///
+    /// # Warning
+    ///
+    /// This function is not recommended for use, as it does not initialise the
+    /// internal cyclical reference. Use [`Self::new_arc`] instead.
     pub fn new(
         host: String,
         port: u16,
@@ -113,8 +129,32 @@ where
             busy: Arc::new(AtomicBool::new(false)),
             func: Box::new(func),
             work_timeout: timeout,
+            postbox: PostBox::new_arc(),
             _phantom: std::marker::PhantomData,
+            _cyclical: OnceLock::new(),
         }
+    }
+
+    /// Intialize the internal cyclical [`Arc`] reference, and return a reference to it.
+    pub fn init_arc(self) -> Arc<Self> {
+        let arc_self = Arc::new(self);
+        Arc::clone(arc_self._cyclical.get_or_init(|| arc_self.clone()))
+    }
+
+    /// Get the internal cyclical [`Arc`] reference.
+    ///
+    /// This can only be used if the worker has an initialised cyclical reference using
+    /// [`Self::init_arc`] or [`Self::new_arc`].
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the cyclical reference is not initialised.
+    pub fn cyclical(&self) -> Arc<Self> {
+        Arc::clone(
+            self._cyclical
+                .get()
+                .expect("Cyclical reference not initialised."),
+        )
     }
 
     /// Create a new worker wrapped in an [`Arc`].
@@ -129,7 +169,7 @@ where
         func: F,
         timeout: tokio::time::Duration,
     ) -> Arc<Self> {
-        Arc::new(Self::new(host, port, nodes, func, timeout))
+        Self::new(host, port, nodes, func, timeout).init_arc()
     }
 
     /// Get the name of this worker.
@@ -244,9 +284,9 @@ where
     }
 
     /// Reserve this node.
-    pub fn reserve(&self) -> Option<token::ReservationToken> {
+    pub fn reserve(&self) -> Option<reservation_token::ReservationToken> {
         // TODO This function does not know who is reserving it. Change this?
-        let token = token::generate_token();
+        let token = reservation_token::generate_token();
         match self
             .reservation
             .compare_exchange(0, token, Ordering::Release, Ordering::Relaxed)
@@ -258,7 +298,7 @@ where
                 // Prevent node poisoning if the reservation is made, but work
                 // is not started after a timeout.
                 tokio::spawn(async move {
-                    tokio::time::sleep(token::TIMEOUT).await;
+                    tokio::time::sleep(reservation_token::TIMEOUT).await;
 
                     if busy_ptr.load(Ordering::Acquire) {
                         eprintln!("Reservation timed out, but the node has started Work; will allow Work to release reservation instead.");
@@ -287,7 +327,7 @@ where
     }
 
     /// Release this node.
-    pub fn release(&self, token: u64) -> Result<token::ReservationToken, AntsError> {
+    pub fn release(&self, token: u64) -> Result<reservation_token::ReservationToken, AntsError> {
         match self
             .reservation
             .compare_exchange(token, 0, Ordering::Release, Ordering::Relaxed)
@@ -347,19 +387,12 @@ where
                 None => {
                     // Make a named block to get a `Result`. Any `Err`s will immediately
                     // short circuit the block.
-                    let result = '_get_result: {
+                    let result: Result<_, AntsError> = '_get_result: {
                         let (address, token) = self.reserve_node().await?;
 
                         let mut client = self.build_client(address.clone()).await?;
 
-                        tokio::select! {
-                            _ = tokio::time::sleep(self.work_timeout) => {
-                                Err(AntsError::ConnectionError(
-                                    address.0.clone(),
-                                    address.1,
-                                    format!("did not respond within {work_timeout:?}", work_timeout=self.work_timeout)
-                                ))
-                            },
+                        let reservation_result = tokio::select! {
                             result = client.work(Request::new(proto::WorkRequest {
                                 token,
                                 body: serde_json::to_string(&body).map_err(
@@ -370,24 +403,71 @@ where
                             })) => { result.map_err(
                                 AntsError::Tonic
                             ) }
-                        }
+                            _ = tokio::time::sleep(self.work_timeout) => {
+                                Err(AntsError::ConnectionError(
+                                    address.0.clone(),
+                                    address.1,
+                                    format!("did not respond within {work_timeout:?}", work_timeout=self.work_timeout)
+                                ))
+                            },
+                        }?;
+
+                        Ok((token, reservation_result))
                     };
 
-                    if let Ok(response) = result {
+                    if let Ok((token, response)) = result {
                         let work_reply = response.into_inner();
-                        if work_reply.success {
-                            return serde_json::from_str(work_reply.body.as_str())
-                                .map_err(|err| AntsError::InvalidWorkResult(err.to_string()))
-                                .map(|r| (work_reply.worker, r));
+                        if work_reply.success && work_reply.token == token {
+                            // We have successfully reserved and sent work to a node.
+                            // We will now create a message, and wait for the work
+                            // result to be delivered.
+                            let message = self
+                                .postbox
+                                .create_message::<proto::DeliverRequest>((
+                                    token,
+                                    work_reply.task_id,
+                                ))
+                                .await;
+
+                            eprintln!(
+                                "Waiting for message {key:?} to be delivered...",
+                                key = message.key()
+                            );
+
+                            // Wait for the message to be delivered.
+                            message.wait_for(self.work_timeout).await?;
+
+                            // Get the message body.
+                            let inner: &proto::DeliverRequest = message.get_body()?;
+
+                            if inner.success {
+                                return Ok((
+                                    inner.worker.clone(),
+                                    serde_json::from_str(inner.body.as_str()).map_err(|err| {
+                                        AntsError::InvalidWorkResult(err.to_string())
+                                    })?,
+                                ));
+                            } else {
+                                eprintln!(
+                                    "Work result received, which reported that work failed on \
+                                    node {} due to {}, trying next node.",
+                                    &inner.worker, inner.error
+                                );
+                            }
+                        } else if work_reply.token != token {
+                            eprintln!(
+                                "Work failed on node {} due to token mismatch, trying next node.",
+                                &work_reply.worker
+                            );
                         } else {
                             eprintln!(
                                 "Work failed on node {} due to {}, trying next node.",
-                                &work_reply.worker, work_reply.error
+                                &work_reply.worker, work_reply.message
                             );
                         }
                     } else {
                         eprintln!(
-                            "Work failed on node due to {}, trying next node.",
+                            "Work request failed on node due to {}, trying next node.",
                             result.err().unwrap()
                         );
                     }
@@ -489,50 +569,138 @@ where
     ///
     /// This will only work if the worker is reserved, and the correct token
     /// is provided.
+    ///
+    /// # Panics
+    ///
+    /// If the [`Worker`] is not instantiated with a cyclical reference, this
+    /// function will panic.
     async fn work(
         &self,
         request: Request<proto::WorkRequest>,
     ) -> Result<Response<proto::WorkReply>, Status> {
         let work_request = request.into_inner();
+        let address = (work_request.host, work_request.port as u16);
         let token = work_request.token;
+        let task_id = message_token::generate_token();
         let parsed_body: Result<T, _> = serde_json::from_str(work_request.body.as_str());
+
+        let arc_self = self.cyclical();
 
         Ok(Response::new(match parsed_body {
             Ok(body) => {
-                let result = self.reserve_and_work(token, body).await;
-
-                match result {
-                    Ok(r) => serde_json::to_string(&r)
-                        .map(|body| proto::WorkReply {
+                let _handle = tokio::spawn(async move {
+                    let result = arc_self.reserve_and_work(token, body).await;
+                    let deliver_request = match result {
+                        Ok(r) => serde_json::to_string(&r)
+                            .map(|body| proto::DeliverRequest {
+                                token,
+                                task_id,
+                                success: true,
+                                error: "".to_string(),
+                                body,
+                                worker: arc_self.name(),
+                            })
+                            .unwrap_or_else(|err| proto::DeliverRequest {
+                                token,
+                                task_id,
+                                success: false,
+                                error: AntsError::InvalidWorkResult(err.to_string()).to_string(),
+                                body: "".to_string(),
+                                worker: arc_self.name(),
+                            }),
+                        Err(err) => proto::DeliverRequest {
                             token,
-                            success: true,
-                            error: "".to_string(),
-                            body,
-                            worker: self.name(),
-                        })
-                        .unwrap_or_else(|err| proto::WorkReply {
-                            token,
+                            task_id,
                             success: false,
-                            error: AntsError::InvalidWorkResult(err.to_string()).to_string(),
+                            error: AntsError::TaskExecutionError(err.to_string()).to_string(),
                             body: "".to_string(),
-                            worker: self.name(),
-                        }),
-                    Err(err) => proto::WorkReply {
-                        token,
-                        success: false,
-                        error: AntsError::TaskExecutionError(err.to_string()).to_string(),
-                        body: "".to_string(),
-                        worker: self.name(),
-                    },
+                            worker: arc_self.name(),
+                        },
+                    };
+
+                    let client = arc_self.build_client(address.clone()).await;
+                    if let Err(err) = client {
+                        eprintln!(
+                            "Failed to connect to node {}:{} to deliver work result due to: {}. Work result will be dropped.",
+                            address.0, address.1, err
+                        );
+                        return;
+                    }
+
+                    let result = client
+                        .unwrap()
+                        .deliver(Request::new(deliver_request))
+                        .await
+                        .map_err(AntsError::Tonic);
+
+                    // If the delivery fails, we just log it for now.
+                    // FIXME How should we handle this?
+                    if let Err(err) = result {
+                        eprintln!("Failed to deliver work result: {:?}", err);
+                    } else if let Ok(response) = result {
+                        let deliver_reply = response.into_inner();
+                        if deliver_reply.success {
+                            eprintln!(
+                                "Work result of {task_id} for reservation #{token} delivered successfully.",
+                                task_id=deliver_reply.task_id,
+                                token=deliver_reply.token,
+                            );
+                        } else {
+                            eprintln!(
+                                "Work result of {task_id} for reservation #{token} delivered, but the host reported it could not be set on the message.",
+                                task_id=deliver_reply.task_id,
+                                token=deliver_reply.token,
+                            );
+                        }
+                    }
+                });
+
+                proto::WorkReply {
+                    token,
+                    task_id,
+                    success: true,
+                    message: "Task spawned successfully.".to_owned(),
+                    worker: self.name(),
                 }
             }
             Err(err) => proto::WorkReply {
                 token,
+                task_id,
                 success: false,
-                error: AntsError::InvalidWorkData(err.to_string()).to_string(),
-                body: "".to_string(),
+                message: AntsError::InvalidWorkData(err.to_string()).to_string(),
                 worker: self.name(),
             },
+        }))
+    }
+
+    async fn deliver(
+        &self,
+        request: Request<proto::DeliverRequest>,
+    ) -> Result<Response<proto::DeliverReply>, Status> {
+        let deliver_request = request.into_inner();
+
+        let message_key = ("Deliver", (deliver_request.token, deliver_request.task_id));
+
+        let token = deliver_request.token;
+        let task_id = deliver_request.task_id;
+        let set_body_result = self.postbox.set_body(&message_key, deliver_request).await;
+        let set_body_success = set_body_result.is_ok();
+
+        if set_body_result.is_err() {
+            eprintln!(
+                "Failed to set the body of message {task_id} for reservation #{token} due to: {err:?}",
+                task_id=task_id,
+                token=token,
+                err=set_body_result.unwrap_err(),
+            );
+        }
+
+        Ok(Response::new(proto::DeliverReply {
+            token,
+            task_id,
+            // We don't care if the delivery fails, as the worker has already done its job.
+            // We can report this back to the worker, who will do nothing about it.
+            success: set_body_success,
         }))
     }
 }

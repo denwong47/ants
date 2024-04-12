@@ -8,6 +8,7 @@ service WorkerAnt {
   rpc Reserve (Empty) returns (ReserveReply) {}
   rpc Release (ReleaseRequest) returns (ReleaseReply) {}
   rpc Work (WorkRequest) returns (WorkReply) {}
+  rpc Deliver (DeliverRequest) returns (DeliverReply) {}
 }
 
 
@@ -45,11 +46,28 @@ message WorkRequest {
   uint32 port = 4;
 }
 
-// A reply for completion of work.
+// A reply to indicate if the work request was accepted.
 message WorkReply {
   uint64 token = 1;
-  bool success = 2;
-  string error = 3;
-  string body = 4;
+  uint64 task_id = 2;
+  bool success = 3;
+  string message = 4;
   string worker = 5;
+}
+
+// A reply for completion of work.
+message DeliverRequest {
+  uint64 token = 1;
+  uint64 task_id = 2;
+  bool success = 3;
+  string error = 4;
+  string body = 5;
+  string worker = 6;
+}
+
+// A reply for acknowledging the delivery.
+message DeliverReply {
+  uint64 token = 1;
+  uint64 task_id = 2;
+  bool success = 3;
 }

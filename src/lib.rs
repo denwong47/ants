@@ -27,6 +27,10 @@ pub use config::CliArgs;
 #[cfg(feature = "example")]
 pub mod example;
 
+pub mod postbox;
+
+pub mod token;
+
 mod worker;
 pub use worker::*;
 
