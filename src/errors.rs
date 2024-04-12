@@ -37,4 +37,16 @@ pub enum AntsError {
     InvalidWorkResult(String),
     #[error("Remote worker is not available at http://{0}:{1}: {2}")]
     ConnectionError(String, u16, String),
+
+    // Postbox
+    #[error("Message #{0} not found, cannot be used.")]
+    MessageNotFound(String),
+    #[error("Message #{0} already set; cannot set again.")]
+    MessageAlreadySet(String),
+    #[error("Message #{0} not set.")]
+    MessageNotSet(String),
+    #[error("Incompatible message found: expected {0}, got {1}")]
+    IncompatibleMessage(String, String),
+    #[error("Incompatible receipient type used for MessageType::{0}: {1}")]
+    IncompatibleRecipientType(String, String),
 }

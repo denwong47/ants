@@ -19,6 +19,7 @@ example = ["local-ip-address"]
 [dependencies]
 axum = "0.7.4"
 clap = { version = "4.5.3", features = ["derive"] }
+fxhash = "0.2.1"
 local-ip-address = { version = "0.6.1", optional = true }
 prost = "0.12"
 rand = "0.8.5"

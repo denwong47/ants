@@ -83,6 +83,11 @@ async fn test_multi_nodes(worker_count: usize) {
         })
         .collect::<std::collections::HashSet<_>>();
 
+    eprintln!(
+        "Commissioned workers: {:?}",
+        commissioned_workers.iter().collect::<Vec<_>>()
+    );
+
     // Make sure all workers were used.
     assert_eq!(commissioned_workers.len(), worker_count);
 }
