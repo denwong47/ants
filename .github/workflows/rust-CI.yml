@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: [ "master", "development" ]
+    branches: [ "main", "development" ]
   pull_request:
-    branches: [ "master", "development" ]
+    branches: [ "main", "development" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,3 +30,7 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -D warnings
     - name: Run tests
       run: cargo test --verbose
+    - name: Run multicast tests
+      working-directory: ./packages/multicast
+      run: cargo test --verbose
+      # run: cargo test --verbose --features=ci_tests

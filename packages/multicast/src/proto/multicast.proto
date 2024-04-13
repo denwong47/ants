@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package multicast.proto;
+
+message MulticastMessage {
+    enum Kind {
+        ORIGIN = 0;
+        // Currently unused.
+        // This is supposingly an acknowledgement of delivery for the message of
+        // the UUID.
+        ACKNOWLEDGE = 1;
+        ECHO = 2;
+        SYSTEM = 3;
+    }
+
+    // Before any hosts send out a message, it should register its UUID as seen first,
+    // unless it also needs to act on it itself.
+    string uuid = 1;
+    Kind kind = 2;
+    // This is for reference only - it should not
+    google.protobuf.Timestamp timestamp = 3;
+    string body = 4;
+
+    uint32 ttl = 32766;
+
+    uint64 checksum = 32767;
+}
