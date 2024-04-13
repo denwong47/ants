@@ -43,6 +43,10 @@ of failure.
       a static list.
 - [ ] Integration and unit tests.
 
+### Pre-requisites
+
+The `protobuf` crate requires `protoc` to be installed. See [Protocol Buffer Compiler Installation](https://grpc.io/docs/protoc-installation/) for more information.
+
 ### Simple demo
 
 In two separate terminals, run the following commands:
