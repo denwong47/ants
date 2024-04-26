@@ -21,7 +21,7 @@
 //! See `bin/serve.rs` for an example of how to use this library to host a
 //! server to listen and do work in ~100 lines of code.
 
-mod config;
+pub mod config;
 pub use config::CliArgs;
 
 #[cfg(feature = "example")]
@@ -30,6 +30,8 @@ pub mod example;
 pub mod postbox;
 
 pub mod token;
+
+pub mod nodes;
 
 mod worker;
 pub use worker::*;

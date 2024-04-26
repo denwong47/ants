@@ -11,6 +11,7 @@ use clap::Parser;
 use std::sync::{Arc, OnceLock};
 
 use ants::{
+    config,
     example::{TaskBody, TaskResponse},
     AntsError, CliArgs, Worker,
 };
@@ -76,14 +77,16 @@ async fn main() -> Result<(), AntsError> {
         args.host.clone(),
         args.grpc_port,
         args.node_addresses()?,
+        config::DEFAULT_MULTICAST_HOST.to_owned(),
+        config::DEFAULT_MULTICAST_PORT,
         do_work,
         tokio::time::Duration::from_secs(6),
-    ));
+    )?);
 
     eprintln!(
         "Worker created: {:?}, aware of {} nodes.",
         worker.name(),
-        worker.nodes.lock().await.len()
+        worker.nodes.len().await
     );
 
     let args = CLI_ARGS.get_or_init(|| args);

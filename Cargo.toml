@@ -15,13 +15,16 @@ path = "bin/serve.rs"
 required-features = ["example"]
 
 [features]
+debug = ["multicast/debug"]
 example = ["local-ip-address"]
 
 [dependencies]
 axum = "0.7.4"
 clap = { version = "4.5.3", features = ["derive"] }
+futures = "0.3.30"
 fxhash = "0.2.1"
 local-ip-address = { version = "0.6.1", optional = true }
+multicast = { path = "packages/multicast" }
 prost = "0.12"
 rand = "0.8.5"
 serde = { version = "1.0.197", features = ["derive"] }

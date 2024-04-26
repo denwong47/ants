@@ -1,26 +1,22 @@
 //! The main worker model.
 //!
 
-use core::cmp::Reverse;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    collections::BinaryHeap,
+    net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, OnceLock,
     },
 };
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
-
-pub type NodeAddress = (String, u16);
-pub type NodeRecord = (tokio::time::Instant, NodeAddress);
 
 use super::{
     proto::{self, worker_ant_server::WorkerAnt as WorkerAntServerTrait},
-    token as reservation_token,
+    token as reservation_token, WorkerBroadcastMessage,
 };
 use crate::{
+    nodes::{NodeAddress, NodeList},
     postbox::{traits::*, PostBox},
     token as message_token, AntsError,
 };
@@ -63,20 +59,27 @@ const RESERVE_ATTEMPTS: usize = 32;
 /// reservation automatically.
 pub struct Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
-    R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
-    FO: std::future::Future<Output = Result<R, E>>,
-    F: Fn(T) -> FO,
-    E: std::fmt::Display + std::fmt::Debug,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    FO: std::future::Future<Output = Result<R, E>>
+        + std::marker::Sync
+        + std::marker::Send
+        + 'static,
+    F: Fn(T) -> FO + 'static,
+    E: std::fmt::Display + std::fmt::Debug + 'static,
     Self: std::marker::Sync + std::marker::Send,
 {
     pub address: NodeAddress,
-    pub nodes: Mutex<BinaryHeap<Reverse<NodeRecord>>>, // Min-heap, so we can pop the node that was least used.
+    pub nodes: Arc<NodeList>,
     pub reservation: Arc<AtomicU64>,
     pub busy: Arc<AtomicBool>,
     pub func: Box<F>,
     pub work_timeout: tokio::time::Duration,
 
+    /// The broadcast agent for the worker.
+    pub broadcaster: Arc<multicast::MulticastAgent<WorkerBroadcastMessage>>,
+
+    /// The postbox for the worker; this is used to stage received messages for delivery.
     pub postbox: Arc<PostBox>,
     _phantom: std::marker::PhantomData<(T, R)>,
 
@@ -89,11 +92,14 @@ where
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
-    R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
-    FO: std::future::Future<Output = Result<R, E>> + std::marker::Sync + std::marker::Send,
-    F: Fn(T) -> FO,
-    E: std::fmt::Display + std::fmt::Debug,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    FO: std::future::Future<Output = Result<R, E>>
+        + std::marker::Sync
+        + std::marker::Send
+        + 'static,
+    F: Fn(T) -> FO + 'static,
+    E: std::fmt::Display + std::fmt::Debug + 'static,
     Self: std::marker::Sync + std::marker::Send,
 {
     /// Create a new worker.
@@ -106,33 +112,47 @@ where
         host: String,
         port: u16,
         nodes: Vec<NodeAddress>,
+        broadcast_host: String,
+        broadcast_port: u16,
         func: F,
         timeout: tokio::time::Duration,
-    ) -> Self {
-        let nodes_heap =
-            BinaryHeap::from_iter(nodes.into_iter().filter_map(|(their_host, their_port)| {
-                // Filter out ourselves.
-                if (&their_host, &their_port) != (&host, &port) {
-                    Some(Reverse((
-                        tokio::time::Instant::now(),
-                        (their_host, their_port),
-                    )))
-                } else {
-                    None
-                }
-            }));
+    ) -> Result<Self, AntsError> {
+        let nodes = NodeList::from_vec(nodes);
 
-        Worker {
+        let broadcaster_socket_addr = SocketAddr::new(
+            broadcast_host.parse().map_err(|_| {
+                AntsError::MulticasterAddressError(format!(
+                    "{} is not a valid IP address.",
+                    broadcast_host
+                ))
+            })?,
+            broadcast_port,
+        );
+
+        if !broadcaster_socket_addr.ip().is_multicast() {
+            return Err(AntsError::MulticasterAddressError(format!(
+                "{}:{} is not a multicast address.",
+                broadcast_host, broadcast_port
+            )));
+        }
+
+        let broadcaster = multicast::MulticastAgent::new(broadcaster_socket_addr)
+            .map_err(AntsError::MulticasterNotAvailable)?;
+
+        let worker = Worker {
             address: (host, port),
-            nodes: Mutex::new(nodes_heap),
+            nodes: Arc::new(nodes),
             reservation: Arc::new(AtomicU64::new(0)),
             busy: Arc::new(AtomicBool::new(false)),
             func: Box::new(func),
             work_timeout: timeout,
+            broadcaster: Arc::new(broadcaster),
             postbox: PostBox::new_arc(),
             _phantom: std::marker::PhantomData,
             _cyclical: OnceLock::new(),
-        }
+        };
+
+        Ok(worker)
     }
 
     /// Intialize the internal cyclical [`Arc`] reference, and return a reference to it.
@@ -162,19 +182,46 @@ where
     /// Since the [`Worker`] is expected to be static and not bound to any particular
     /// scope, creating [`Arc`] wrapped instances is the most common way to use this
     /// struct.
-    pub fn new_arc(
+    ///
+    /// This will also initialise the internal cyclical reference as well as the broadcast
+    /// agent.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_and_init(
         host: String,
         port: u16,
         nodes: Vec<NodeAddress>,
+        broadcast_host: String,
+        broadcast_port: u16,
         func: F,
         timeout: tokio::time::Duration,
-    ) -> Arc<Self> {
-        Self::new(host, port, nodes, func, timeout).init_arc()
+    ) -> Result<Arc<Self>, AntsError> {
+        Self::new(
+            host,
+            port,
+            nodes,
+            broadcast_host,
+            broadcast_port,
+            func,
+            timeout,
+        )?
+        .init_arc()
+        .init_broadcast()
+        .await
     }
 
     /// Get the name of this worker.
     pub fn name(&self) -> String {
         format!("worker://{}:{}", self.address.0, self.address.1)
+    }
+
+    /// Get the host of this worker.
+    pub fn host(&self) -> String {
+        self.address.0.clone()
+    }
+
+    /// Get the port of this worker.
+    pub fn port(&self) -> u16 {
+        self.address.1
     }
 
     /// Build a client to the given node.
@@ -189,36 +236,42 @@ where
             .map_err(|err| AntsError::ConnectionError(to.0, to.1, err.to_string()))
     }
 
-    /// Get the next node to use.
+    /// Get the next node to use from th [`NodeList`].
     pub async fn next_node(&self) -> Option<NodeAddress> {
-        let record = self.nodes.lock().await.pop();
-        record.map(|Reverse((_, node))| node)
+        self.nodes.next().await
     }
 
     /// Get the next node with the duration since the last call.
     pub async fn next_node_with_duration(&self) -> Option<(tokio::time::Duration, NodeAddress)> {
-        let record = self.nodes.lock().await.pop();
-        record.map(|Reverse((time, node))| (time.elapsed(), node))
+        self.nodes.next_with_duration().await
     }
 
-    /// Add a node back to the heap.
-    pub async fn add_node(&self, node: NodeAddress) {
-        self.nodes
-            .lock()
-            .await
-            .push(Reverse((tokio::time::Instant::now(), node)));
+    /// Add a node back to the [`NodeList`].
+    pub async fn add_node(&self, node: NodeAddress) -> bool {
+        self.nodes.insert(node).await
+    }
+
+    /// Check if the node is in the [`NodeList`].
+    pub async fn has_node(&self, node: &NodeAddress) -> bool {
+        self.nodes.contains(node).await
+    }
+
+    /// Remove a node from the [`NodeList`].
+    pub async fn remove_node(&self, node: &NodeAddress) {
+        self.nodes.remove(node).await;
     }
 
     /// Attempt to reserve a node, and return the reservation token if successful.
     pub async fn reserve_node(&self) -> Result<(NodeAddress, u64), AntsError> {
         for tries in 0..RESERVE_ATTEMPTS {
-            if let Some((duration, address)) = self.next_node_with_duration().await {
+            if let Some(checked_out_node) = self.nodes.checkout().await {
                 // DDoS prevention.
-                if tries > 0 && duration < RESERVE_TIMEOUT {
+                if tries > 0 && checked_out_node.since_last_used < RESERVE_TIMEOUT {
                     eprintln!(
-                        "The top node was queried {duration:?} ago, waiting for {RESERVE_TIMEOUT:?} before trying again."
+                        "The top node was queried {duration:?} ago, waiting for {RESERVE_TIMEOUT:?} before trying again.",
+                        duration = checked_out_node.since_last_used,
                     );
-                    tokio::time::sleep(RESERVE_TIMEOUT - duration).await;
+                    tokio::time::sleep(RESERVE_TIMEOUT - checked_out_node.since_last_used).await;
                 }
 
                 // this needs to contact the node and reserve it.
@@ -227,23 +280,22 @@ where
                 let mut client = match tokio::select! {
                     _ = tokio::time::sleep(RESERVE_TIMEOUT) => {
                         Err(AntsError::ConnectionError(
-                            address.0.clone(),
-                            address.1,
+                            checked_out_node.host().to_owned(),
+                            checked_out_node.port(),
                             format!("did not respond within {RESERVE_TIMEOUT:?}")
                         ))
                     },
-                    connection_result = self.build_client(address.clone()) => {
+                    connection_result = self.build_client(checked_out_node.address().clone()) => {
                         connection_result
                     }
                 } {
                     Ok(client) => {
                         // Put the node back in the heap, but this time with a new timestamp.
-                        self.add_node(address.clone()).await;
                         client
                     }
                     Err(err) => {
                         // Put the node back in the heap, but this time with a new timestamp.
-                        self.add_node(address.clone()).await;
+                        let address = checked_out_node.complete().await;
                         eprintln!(
                             "Failed to connect to node {}:{} due to {}, trying next node.",
                             &address.0, &address.1, err
@@ -252,10 +304,16 @@ where
                     }
                 };
 
-                let response = client
-                    .reserve(Request::new(proto::Empty {}))
-                    .await?
-                    .into_inner();
+                let reservation_result = client.reserve(Request::new(proto::Empty {})).await;
+
+                // Put the node back in the heap, but this time with a new timestamp.
+                // While this node will be flagged as "reservable", it will not be
+                // possible to do so while our reservation is in place.
+                let address = checked_out_node.complete().await;
+
+                // Now that we have put the node back in the heap, we can check the
+                // reservation result.
+                let response = reservation_result?.into_inner();
 
                 if response.success {
                     return Ok((address, response.token));
@@ -505,6 +563,53 @@ where
             ))
             .await
             .map_err(|err| AntsError::TonicServerStartUpError(err.to_string()))
+    }
+}
+
+impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
+where
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
+    R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
+    FO: std::future::Future<Output = Result<R, E>> + std::marker::Sync + std::marker::Send,
+    F: Fn(T) -> FO + Copy, // Copy is required for the `Fn` trait.
+    E: std::fmt::Display + std::fmt::Debug,
+    Self: std::marker::Sync + std::marker::Send,
+{
+    /// Create a number of new workers wrapped in an [`Arc`].
+    ///
+    /// Each worker will have a port number that is incremented by 1 from the
+    /// previous worker.
+    ///
+    /// This is mostly designed for testing purposes, as there is not much purpose
+    /// in creating multiple workers on the same machine if the work is CPU or
+    /// device-bound.
+    ///
+    /// # See Also
+    ///
+    /// See [`Self::new_and_init`] for more information.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_and_init_multiple(
+        count: usize,
+        host: String,
+        port: u16,
+        nodes: Vec<NodeAddress>,
+        broadcast_host: String,
+        broadcast_port: u16,
+        func: F,
+        timeout: tokio::time::Duration,
+    ) -> Result<Vec<Arc<Self>>, AntsError> {
+        futures::future::try_join_all((0..count).map(|id| {
+            Self::new_and_init(
+                host.clone(),
+                port + id as u16,
+                nodes.clone(),
+                broadcast_host.clone(),
+                broadcast_port,
+                func,
+                timeout,
+            )
+        }))
+        .await
     }
 }
 

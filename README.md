@@ -39,9 +39,12 @@ of failure.
       first to receive a request. This could be tweaked to take into account the
       distance between nodes; but currently all nodes are assumed to be
       clustered in the same subnet and have the same latency.
-- [ ] In the future, the nodes should discover each other using multicast, rather than
+- [X] The nodes should discover each other using multicast, rather than
       a static list.
-- [ ] Integration and unit tests.
+- [ ] The system should be able to ask multiple nodes to do the same work, until
+      some results agree with each other. This is to prevent a node from returning
+      corrupted results.
+- [X] Integration and unit tests.
 
 ### Pre-requisites
 

@@ -41,7 +41,7 @@ impl Hash for MulticastMessage {
     fn hash<H: Hasher>(&self, state: &mut H) {
         hash_multicast_message_components(
             &self.uuid,
-            &(self.kind as i32),
+            &self.kind,
             self.timestamp.as_ref(),
             &self.body,
             &self.ttl,
@@ -56,7 +56,7 @@ impl MulticastMessage {
     pub fn generate_checksum(&self) -> u64 {
         multicast_message_components_checksum(
             &self.uuid,
-            &(self.kind as i32),
+            &self.kind,
             self.timestamp.as_ref(),
             &self.body,
             &self.ttl,
