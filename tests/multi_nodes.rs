@@ -1,9 +1,8 @@
-use ants::{AntsError, Worker};
+use ants::{config, AntsError, Worker};
 use std::sync::Arc;
 
 const BASE_HOST: &str = "127.0.0.1";
 const BASE_PORT: u16 = 50051;
-const PORT_INCREMENT: u16 = 1;
 
 const WAIT_FOR_WORKER: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -20,29 +19,24 @@ async fn pow_2(input: u32) -> Result<u32, AntsError> {
 
 /// Test multiple nodes.
 async fn test_multi_nodes(worker_count: usize) {
-    let nodes = (0..worker_count)
-        .map(|id| {
-            (
-                BASE_HOST.to_owned(),
-                BASE_PORT + (id as u16) * PORT_INCREMENT,
-            )
-        })
-        .collect::<Vec<_>>();
+    // Let the nodes discover each other by multicast.
+    let nodes = vec![];
 
-    let workers = (0..worker_count)
-        .map(|id| {
-            Worker::new_arc(
-                BASE_HOST.to_owned(),
-                BASE_PORT + (id as u16) * PORT_INCREMENT,
-                // Cloning here is fine. You are not supposed to run more than one
-                // worker in the same process anyway, so in production usage
-                // this clone shouldn't be needed.
-                nodes.clone(),
-                pow_2,
-                WORK_TIMEOUT,
-            )
-        })
-        .collect::<Vec<_>>();
+    let workers = Worker::new_and_init_multiple(
+        worker_count,
+        BASE_HOST.to_owned(),
+        BASE_PORT,
+        // Cloning here is fine. You are not supposed to run more than one
+        // worker in the same process anyway, so in production usage
+        // this clone shouldn't be needed.
+        nodes,
+        config::DEFAULT_MULTICAST_HOST.to_owned(),
+        config::DEFAULT_MULTICAST_PORT,
+        pow_2,
+        WORK_TIMEOUT,
+    )
+    .await
+    .expect("Failed to create workers.");
 
     let inner_worker = Arc::clone(workers.first().unwrap());
 

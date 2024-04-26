@@ -52,7 +52,7 @@ pub struct MulticastDelivery<T: serde::de::DeserializeOwned> {
     pub body: T,
 }
 
-impl<'de, T: serde::de::DeserializeOwned> TryFrom<MulticastReceipt> for MulticastDelivery<T> {
+impl<T: serde::de::DeserializeOwned> TryFrom<MulticastReceipt> for MulticastDelivery<T> {
     type Error = io::Error;
 
     /// Try to convert a [`MulticastReceipt`] into a [`MulticastDelivery`].

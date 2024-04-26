@@ -1,8 +1,13 @@
 //! CLI configuration to parse CLI arguments.
 //!
-//!
-use crate::{AntsError, NodeAddress};
+use crate::{nodes::NodeAddress, AntsError};
 use clap::Parser;
+
+/// Default Multicast address.
+pub const DEFAULT_MULTICAST_HOST: &str = "224.0.0.121";
+
+/// Default Multicast port.
+pub const DEFAULT_MULTICAST_PORT: u16 = 50061;
 
 #[derive(Parser, Debug, Clone)]
 pub struct CliArgs {
@@ -13,6 +18,10 @@ pub struct CliArgs {
     #[clap(long, default_value_t = 50051)]
     pub grpc_port: u16,
     pub nodes: Vec<String>,
+    #[clap(long, default_value = DEFAULT_MULTICAST_HOST)]
+    pub multicast_host: String,
+    #[clap(long, default_value_t = DEFAULT_MULTICAST_PORT)]
+    pub multicast_port: u16,
 }
 
 impl CliArgs {

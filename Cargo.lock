@@ -83,6 +83,7 @@ dependencies = [
  "futures",
  "fxhash",
  "local-ip-address",
+ "multicast",
  "prost",
  "rand",
  "serde",

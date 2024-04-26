@@ -9,11 +9,13 @@ use std::{
     net::SocketAddr,
     sync::{Arc, Mutex, OnceLock},
 };
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{watch, Notify, OnceCell, RwLock};
 
 use uuid::Uuid;
 
 use fxhash::FxHashMap;
+
+use super::SystemMessage;
 
 /// The default packet size for receiving multicast messages.
 ///
@@ -40,6 +42,9 @@ pub const LOOPBACK_ADDRESS: SocketAddr = SocketAddr::new(
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
     0,
 );
+
+/// A map of acknowledgements for each UUID to their senders and the time they were received.
+pub type AcknowledgementRecords = FxHashMap<Uuid, Mutex<Vec<(SocketAddr, tokio::time::Instant)>>>;
 
 /// The main multicast struct that handles sending and receiving multicast messages.
 ///
@@ -70,7 +75,7 @@ where
     listener_handle: OnceLock<tokio::task::JoinHandle<()>>,
 
     /// The socket used to send multicast messages.
-    sender: OnceLock<AsyncSocket>,
+    sender: OnceCell<AsyncSocket>,
 
     /// The multicast address to send and receive messages from.
     multicast_addr: SocketAddr,
@@ -79,8 +84,7 @@ where
     seen: RwLock<FxHashMap<Uuid, (SocketAddr, tokio::time::Instant)>>,
 
     /// If an acknowledgement is returned, it will be stored here.
-    pub(crate) acknowledgements:
-        RwLock<FxHashMap<Uuid, Mutex<Vec<(SocketAddr, tokio::time::Instant)>>>>,
+    pub(crate) acknowledgements: RwLock<AcknowledgementRecords>,
 
     /// The queue of messages that have been received but not yet processed.
     pub output: Queue<MulticastDelivery<T>>,
@@ -102,6 +106,16 @@ where
 
     /// A [`Notify`] whenever an acknowledgement is received.
     pub(crate) _acknowledgement_flag: Arc<Notify>,
+
+    /// A [`Notify`] whever a message is delivered.
+    pub(crate) _delivery_flag: Arc<Notify>,
+
+    /// A secret [`Uuid`] used for self-testing.
+    ///
+    /// This contains a [`watch::Sender`] that will be used to store the [`Uuid`] of the
+    /// incoming self-test message, which the caller can then use to monitor and verify
+    /// the message.
+    pub(crate) _self_test_received: RwLock<OnceCell<watch::Sender<Option<Uuid>>>>,
 }
 
 impl<T> MulticastAgent<T>
@@ -117,7 +131,7 @@ where
         Ok(Self {
             listener,
             listener_handle: OnceLock::new(),
-            sender: OnceLock::new(),
+            sender: OnceCell::new(),
             multicast_addr,
             seen: RwLock::new(FxHashMap::default()),
             acknowledgements: RwLock::new(FxHashMap::default()),
@@ -126,6 +140,8 @@ where
             packet_size: DEFAULT_PACKET_SIZE,
             _terminate_flag: Arc::new(Notify::new()),
             _acknowledgement_flag: Arc::new(Notify::new()),
+            _delivery_flag: Arc::new(Notify::new()),
+            _self_test_received: RwLock::new(OnceCell::new()),
         })
     }
 
@@ -158,7 +174,7 @@ where
     /// a scenario, however, this method will correctly return `false` for the
     /// second call.
     pub async fn mark_seen(&self, uuid: &Uuid, addr: SocketAddr) -> bool {
-        if !self.seen.read().await.contains_key(&uuid) {
+        if !self.seen.read().await.contains_key(uuid) {
             // There is a problem here with the atomicity of the operation:
             // it is possible that another write operation has occurred between
             // the check and the write, which would cause the second write to
@@ -216,9 +232,12 @@ where
         loopback: bool,
     ) -> io::Result<usize> {
         let buffer = message.to_bytes();
-        let sender = self.sender.get_or_init(|| {
-            create_udp_all_v4_interfaces(0).expect("Failed to create sender socket.")
-        });
+        let sender = self
+            .sender
+            .get_or_init(|| async {
+                create_udp_all_v4_interfaces(0).expect("Failed to create sender socket.")
+            })
+            .await;
 
         if !loopback {
             tokio::join!(
@@ -231,7 +250,7 @@ where
         // the message will be received by the listener anyway.
 
         // Send the message to the multicast address.
-        send_multicast(&sender, &self.multicast_addr, &buffer).await
+        send_multicast(sender, &self.multicast_addr, &buffer).await
     }
 
     /// Receive a message from the multicast address.
@@ -350,13 +369,37 @@ where
             },
             // Convert the message to a delivery.
             '_convert_to_delivery: {
-                async { MulticastDelivery::try_from((message, socket_addr, received)) }
+                async {
+                    if multicast_message::Kind::try_from(message.kind)
+                        != Ok(multicast_message::Kind::System)
+                    {
+                        // Non-system message.
+                        MulticastDelivery::try_from((message, socket_addr, received)).map(Some)
+                    } else {
+                        // System message.
+                        let system_message: SystemMessage = serde_json::from_str(&message.body)
+                            .map_err(|err| {
+                                build_error(&format!(
+                                    "Failed to deserialize system message: {}",
+                                    err
+                                ))
+                            })?;
+
+                        self.resolve_system_message(system_message).await?;
+                        Ok(Option::<MulticastDelivery<T>>::None)
+                    }
+                }
             },
-            // TODO: Acknowledgement.
         ) {
             Ok((_, _, delivery)) => {
-                logger::debug!("Converted message {} to delivery.", uuid);
-                Ok(Some(delivery))
+                if delivery.is_some() {
+                    // Notify all the waiting threads that a delivery has been made.
+                    self._delivery_flag.notify_waiters();
+                    logger::debug!("Converted message {} to delivery.", uuid);
+                } else {
+                    logger::debug!("Received system message {}.", uuid);
+                }
+                Ok(delivery)
             }
             Err(err) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -370,7 +413,7 @@ where
         let weak_self = Arc::downgrade(self);
         let arc_notify = Arc::clone(&self._terminate_flag);
 
-        self.listener_handle.get_or_init(|| {
+        self.listener_handle.get_or_init(||
             tokio::spawn(async move {
                 // This is the listener task that will receive messages.
                 // It only holds a weak reference to the agent, so that it can terminate
@@ -404,7 +447,19 @@ where
                     _ = recv_messages => {},
                 }
             })
-        });
+        );
+    }
+
+    /// Check if the agent is listening for messages.
+    ///
+    /// # Note
+    ///
+    /// If you intend to start the agent if not already, simply call the [`Self::start`] method,
+    /// which will not error if the agent is already listening.
+    ///
+    /// This method is useful for checking only.
+    pub fn is_listening(&self) -> bool {
+        self.listener_handle.get().is_some()
     }
 }
 

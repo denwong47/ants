@@ -49,4 +49,12 @@ pub enum AntsError {
     IncompatibleMessage(String, String),
     #[error("Incompatible receipient type used for MessageType::{0}: {1}")]
     IncompatibleRecipientType(String, String),
+
+    // Multicaster
+    #[error("Multicaster not available: {0}")]
+    MulticasterNotAvailable(std::io::Error),
+    #[error("Multicaster address error: {0}")]
+    MulticasterAddressError(String),
+    #[error("Could not send Multicast message: {0}")]
+    MulticastSendError(String),
 }

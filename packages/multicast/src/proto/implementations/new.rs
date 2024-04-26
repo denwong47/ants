@@ -29,8 +29,8 @@ impl MulticastMessage {
             kind: kind.into(),
             timestamp: Some(timestamp),
             body: body.to_string(),
-            ttl: ttl,
-            checksum: checksum,
+            ttl,
+            checksum,
         }
     }
 }

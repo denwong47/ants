@@ -10,6 +10,9 @@ use crate::proto::{multicast_message, MulticastMessage};
 
 use crate::logger;
 
+#[cfg(doc)]
+use tokio::sync::Notify;
+
 macro_rules! ignore_poison {
     ($uuid:expr) => {
         |poison| {
@@ -45,12 +48,15 @@ where
 
         // The above check is not atomic, so we still need to be careful about
         // the entry now suddenly existing in between the check and the write.
+        //
+        // TODO Use `.read()` if the entry already exists.
         self.acknowledgements
             .write()
             .await
             .entry(*uuid)
             .and_modify(|acknowledgements| {
                 if let Some(socket_addr) = sender {
+                    #[allow(clippy::mut_mutex_lock)]
                     let mut inner = acknowledgements.lock().unwrap_or_else(
                         // If the lock is poisoned, we clear the poison and print a warning.
                         |poison| {
