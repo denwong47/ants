@@ -20,11 +20,11 @@ static CLI_ARGS: OnceLock<CliArgs> = OnceLock::new();
 
 /// Not actually doing any work, just to simulate a long running task.
 async fn do_work(body: String) -> Result<String, AntsError> {
-    eprintln!("Simulating work for '{body}'...");
+    logger::debug!("Simulating work for '{body}'...");
     // We use the BLOCKING executor to simulate a CPU bound task.
     // This thread won't be available for other tasks until the sleep is done.
     std::thread::sleep(std::time::Duration::from_secs(5));
-    eprintln!("Finished work for '{body}'...");
+    logger::debug!("Finished work for '{body}'...");
     Ok(format!("Work done: {}", body))
 }
 
@@ -83,7 +83,7 @@ async fn main() -> Result<(), AntsError> {
         tokio::time::Duration::from_secs(6),
     )?);
 
-    eprintln!(
+    logger::info!(
         "Worker created: {:?}, aware of {} nodes.",
         worker.name(),
         worker.nodes.len().await
@@ -105,18 +105,18 @@ async fn main() -> Result<(), AntsError> {
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            eprintln!("SIGTERM received, gracefully shutting down.");
+            logger::info!("SIGTERM received, gracefully shutting down.");
             Ok(())
         },
         _ = async move {
-            eprintln!("Axum listening on http://{}:{}...", args.host, args.port);
+            logger::info!("Axum listening on http://{}:{}...", args.host, args.port);
             axum::serve(listener, app).await
         } => {
-            eprintln!("Axum server has shut down, terminating.");
+            logger::info!("Axum server has shut down, terminating.");
             Err(AntsError::Termination("Axum server has shut down.".to_owned()))
         },
         _ = async move { worker.start().await } => {
-            eprintln!("Worker has shut down, terminating.");
+            logger::info!("Worker has shut down, terminating.");
             Err(AntsError::Termination("Worker has shut down.".to_owned()))
         }
     }

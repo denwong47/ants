@@ -137,27 +137,27 @@ mod test {
 
             // This is to simulate the remote worker sending a message to the postbox.
             async move {
-                eprintln!("Sleeping for a bit.");
+                logger::debug!("Sleeping for a bit.");
                 tokio::time::sleep(tokio::time::Duration::from_secs_f32(0.5)).await;
 
-                eprintln!("Setting the message body.");
+                logger::debug!("Setting the message body.");
                 remote_postbox
                     .set_body(&key, expected)
                     .await
                     .expect("Failed to set the message body.");
 
-                eprintln!("Setting the message body again, expecting a failure.");
+                logger::debug!("Setting the message body again, expecting a failure.");
                 let result = remote_postbox.set_body(&key, bad_result).await;
                 assert!(result.is_err());
             }
         };
         let local_task = async move {
-            eprintln!("Waiting for the message.");
+            logger::debug!("Waiting for the message.");
             message
                 .wait_for(tokio::time::Duration::from_secs(1))
                 .await
                 .unwrap();
-            eprintln!("Message received.")
+            logger::debug!("Message received.")
         };
 
         tokio::join!(remote_task, local_task);

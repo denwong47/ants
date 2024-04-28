@@ -19,4 +19,5 @@ pub fn build_error(message: &str) -> io::Error {
 #[cfg(test)]
 pub mod _tests;
 
-pub mod logger;
+/// Re-export the [`logger`] module.
+pub use logger;

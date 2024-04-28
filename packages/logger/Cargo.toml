@@ -1,0 +1,19 @@
+[package]
+name = "logger"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = ["debug"]
+debug = ["dep:chrono"]
+
+[dependencies]
+chrono = { version = "0.4.38", optional=true, features = ["alloc"] }
+
+[build-dependencies]
+itertools = "0.12.1"
+
+[dev-dependencies]
+serde = { version = "1.0.199", features = ["derive"] }
