@@ -33,4 +33,6 @@ jobs:
     - name: Run multicast tests
       working-directory: ./packages/multicast
       run: cargo test --verbose
-      # run: cargo test --verbose --features=ci_tests
+    - name: Run logger tests
+      working-directory: ./packages/logger
+      run: cargo test --verbose

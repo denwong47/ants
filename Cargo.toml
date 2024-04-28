@@ -1,4 +1,4 @@
-workspace = { members = ["packages/multicast"] }
+workspace = { members = [ "packages/logger","packages/multicast"] }
 [package]
 name = "ants"
 version = "0.1.0"
@@ -15,15 +15,17 @@ path = "bin/serve.rs"
 required-features = ["example"]
 
 [features]
-debug = ["multicast/debug"]
+debug = ["multicast/debug", "dep:chrono", "logger/debug"]
 example = ["local-ip-address"]
 
 [dependencies]
 axum = "0.7.4"
+chrono = { version = "0.4.38", optional = true }
 clap = { version = "4.5.3", features = ["derive"] }
 futures = "0.3.30"
 fxhash = "0.2.1"
 local-ip-address = { version = "0.6.1", optional = true }
+logger = { version = "0.1.0", path = "packages/logger", default-features = false }
 multicast = { path = "packages/multicast" }
 prost = "0.12"
 rand = "0.8.5"

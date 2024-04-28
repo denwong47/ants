@@ -47,9 +47,9 @@ async fn test_multi_nodes(worker_count: usize) {
             panic!("Workers should not return.")
         },
         results = async {
-            eprintln!("Waiting for workers to start.");
+            logger::debug!("Waiting for workers to start.");
             tokio::time::sleep(WAIT_FOR_WORKER).await;
-            eprintln!("Workers should be running now.");
+            logger::debug!("Workers should be running now.");
 
             futures::future::join_all(
                 (0..worker_count+1)
@@ -77,7 +77,7 @@ async fn test_multi_nodes(worker_count: usize) {
         })
         .collect::<std::collections::HashSet<_>>();
 
-    eprintln!(
+    logger::info!(
         "Commissioned workers: {:?}",
         commissioned_workers.iter().collect::<Vec<_>>()
     );

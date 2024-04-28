@@ -267,9 +267,10 @@ where
             if let Some(checked_out_node) = self.nodes.checkout().await {
                 // DDoS prevention.
                 if tries > 0 && checked_out_node.since_last_used < RESERVE_TIMEOUT {
-                    eprintln!(
-                        "The top node was queried {duration:?} ago, waiting for {RESERVE_TIMEOUT:?} before trying again.",
+                    logger::info!(
+                        "The top node was queried {duration:?} ago, waiting for {timeout:?} before trying again.",
                         duration = checked_out_node.since_last_used,
+                        timeout = RESERVE_TIMEOUT,
                     );
                     tokio::time::sleep(RESERVE_TIMEOUT - checked_out_node.since_last_used).await;
                 }
@@ -293,12 +294,14 @@ where
                         // Put the node back in the heap, but this time with a new timestamp.
                         client
                     }
-                    Err(err) => {
+                    Err(_err) => {
                         // Put the node back in the heap, but this time with a new timestamp.
-                        let address = checked_out_node.complete().await;
-                        eprintln!(
+                        let _address = checked_out_node.complete().await;
+                        logger::warn!(
                             "Failed to connect to node {}:{} due to {}, trying next node.",
-                            &address.0, &address.1, err
+                            &_address.0,
+                            &_address.1,
+                            _err
                         );
                         continue;
                     }
@@ -318,9 +321,10 @@ where
                 if response.success {
                     return Ok((address, response.token));
                 } else {
-                    eprintln!(
+                    logger::debug!(
                         "Node {}:{} is reserved, trying next node.",
-                        &address.0, &address.1
+                        &address.0,
+                        &address.1
                     );
                 }
             } else {
@@ -328,11 +332,12 @@ where
                 //
                 // This needs to be re-think - if all available nodes are checked out
                 // at once for reservation, should we just wait for one to be available?
-                eprintln!(
+                logger::warn!(
                     "No nodes available in the heap at all. This could be due to all \
                     nodes being checked out for reservation, or no nodes were added to \
-                    the Worker at the first place. We will wait for {RESERVE_TIMEOUT:?} \
-                    before trying again."
+                    the Worker at the first place. We will wait for {timeout:?} \
+                    before trying again.",
+                    timeout = RESERVE_TIMEOUT
                 );
                 tokio::time::sleep(RESERVE_TIMEOUT).await;
             }
@@ -359,7 +364,7 @@ where
                     tokio::time::sleep(reservation_token::TIMEOUT).await;
 
                     if busy_ptr.load(Ordering::Acquire) {
-                        eprintln!("Reservation timed out, but the node has started Work; will allow Work to release reservation instead.");
+                        logger::trace!("Reservation timed out, but the node has started Work; will allow Work to release reservation instead.");
                     } else {
                         match reservation_ptr.compare_exchange(
                             token,
@@ -367,13 +372,17 @@ where
                             Ordering::Release,
                             Ordering::Relaxed,
                         ) {
-                            Ok(_) => eprintln!("Reservation timed out and released."),
-                            Err(_) => eprintln!("Reservation timed out, but was already released."),
+                            Ok(_) => {
+                                logger::trace!("Reservation timed out and released.")
+                            }
+                            Err(_) => {
+                                logger::trace!("Reservation timed out, but was already released.")
+                            }
                         }
                     }
                 });
 
-                eprintln!(
+                logger::info!(
                     "Reserved {name} with token {token}.",
                     name = self.name(),
                     token = token
@@ -487,7 +496,7 @@ where
                                 ))
                                 .await;
 
-                            eprintln!(
+                            logger::trace!(
                                 "Waiting for message {key:?} to be delivered...",
                                 key = message.key()
                             );
@@ -506,25 +515,27 @@ where
                                     })?,
                                 ));
                             } else {
-                                eprintln!(
+                                logger::warn!(
                                     "Work result received, which reported that work failed on \
                                     node {} due to {}, trying next node.",
-                                    &inner.worker, inner.error
+                                    &inner.worker,
+                                    inner.error
                                 );
                             }
                         } else if work_reply.token != token {
-                            eprintln!(
+                            logger::error!(
                                 "Work failed on node {} due to token mismatch, trying next node.",
                                 &work_reply.worker
                             );
                         } else {
-                            eprintln!(
+                            logger::error!(
                                 "Work failed on node {} due to {}, trying next node.",
-                                &work_reply.worker, work_reply.message
+                                &work_reply.worker,
+                                work_reply.message
                             );
                         }
                     } else {
-                        eprintln!(
+                        logger::error!(
                             "Work request failed on node due to {}, trying next node.",
                             result.err().unwrap()
                         );
@@ -549,9 +560,10 @@ where
 {
     /// Start the worker server to listen.
     pub async fn start(self: &Arc<Self>) -> Result<(), AntsError> {
-        eprintln!(
+        logger::info!(
             "Starting RPC server on {}:{}...",
-            self.address.0, self.address.1
+            self.address.0,
+            self.address.1
         );
         tonic::transport::Server::builder()
             .add_service(proto::worker_ant_server::WorkerAntServer::from_arc(
@@ -713,21 +725,21 @@ where
                                 body: "".to_string(),
                                 worker: arc_self.name(),
                             }),
-                        Err(err) => proto::DeliverRequest {
+                        Err(_err) => proto::DeliverRequest {
                             token,
                             task_id,
                             success: false,
-                            error: AntsError::TaskExecutionError(err.to_string()).to_string(),
+                            error: AntsError::TaskExecutionError(_err.to_string()).to_string(),
                             body: "".to_string(),
                             worker: arc_self.name(),
                         },
                     };
 
                     let client = arc_self.build_client(address.clone()).await;
-                    if let Err(err) = client {
-                        eprintln!(
+                    if let Err(_err) = client {
+                        logger::warn!(
                             "Failed to connect to node {}:{} to deliver work result due to: {}. Work result will be dropped.",
-                            address.0, address.1, err
+                            address.0, address.1, _err
                         );
                         return;
                     }
@@ -740,18 +752,18 @@ where
 
                     // If the delivery fails, we just log it for now.
                     // FIXME How should we handle this?
-                    if let Err(err) = result {
-                        eprintln!("Failed to deliver work result: {:?}", err);
+                    if let Err(_err) = result {
+                        logger::error!("Failed to deliver work result: {:?}", _err);
                     } else if let Ok(response) = result {
                         let deliver_reply = response.into_inner();
                         if deliver_reply.success {
-                            eprintln!(
+                            logger::info!(
                                 "Work result of {task_id} for reservation #{token} delivered successfully.",
                                 task_id=deliver_reply.task_id,
                                 token=deliver_reply.token,
                             );
                         } else {
-                            eprintln!(
+                            logger::error!(
                                 "Work result of {task_id} for reservation #{token} delivered, but the host reported it could not be set on the message.",
                                 task_id=deliver_reply.task_id,
                                 token=deliver_reply.token,
@@ -768,11 +780,11 @@ where
                     worker: self.name(),
                 }
             }
-            Err(err) => proto::WorkReply {
+            Err(_err) => proto::WorkReply {
                 token,
                 task_id,
                 success: false,
-                message: AntsError::InvalidWorkData(err.to_string()).to_string(),
+                message: AntsError::InvalidWorkData(_err.to_string()).to_string(),
                 worker: self.name(),
             },
         }))
@@ -792,7 +804,7 @@ where
         let set_body_success = set_body_result.is_ok();
 
         if set_body_result.is_err() {
-            eprintln!(
+            logger::error!(
                 "Failed to set the body of message {task_id} for reservation #{token} due to: {err:?}",
                 task_id=task_id,
                 token=token,

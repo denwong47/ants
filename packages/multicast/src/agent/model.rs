@@ -326,11 +326,11 @@ where
                                     _size
                                 );
                             }
-                            Err(err) => {
+                            Err(_err) => {
                                 logger::warn!(
                                     "Failed to send acknowledgement for message {}: {}",
                                     uuid,
-                                    err
+                                    _err
                                 );
                             }
                         }
@@ -353,12 +353,12 @@ where
                                     describe_socket_addr(&socket_addr)
                                 );
                             }
-                            Err(err) => {
+                            Err(_err) => {
                                 logger::warn!(
                                     "Failed to re-broadcast message {} from {}: {}",
                                     uuid,
                                     describe_socket_addr(&socket_addr),
-                                    err
+                                    _err
                                 );
                             }
                         };
