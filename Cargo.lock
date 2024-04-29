@@ -94,7 +94,6 @@ name = "ants"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.5",
- "chrono",
  "clap",
  "futures",
  "fxhash",
@@ -960,7 +959,6 @@ dependencies = [
 name = "multicast"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "clap",
  "crossterm",
  "deadqueue",

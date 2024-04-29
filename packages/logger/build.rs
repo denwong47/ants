@@ -25,7 +25,7 @@ macro_rules! {name} {{
                 \"\\x1b[38:5:245m{{}}\\x1b[39m \u{2502} \",
                 \"\\x1b[1m\\x1b[38:5:{ansi}m{title:7} \u{2502} \\x1b[22m{{}}\\x1b[39m\",
             ),
-            chrono::Utc::now().to_rfc3339(),
+            logger::timestamp::now(),
             $base
         );
     }};
@@ -38,7 +38,7 @@ macro_rules! {name} {{
                 $base,
                 \"\\x1b[39m\"
             ),
-            chrono::Utc::now().to_rfc3339(),
+            logger::timestamp::now(),
             $($arg)*
         );
     }};

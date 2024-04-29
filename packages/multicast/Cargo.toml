@@ -11,14 +11,12 @@ path = "examples/chat/main.rs"
 required-features = ["chat"]
 
 [features]
-debug = ["logger/debug", "chrono"]
+debug = ["logger/debug"]
 chat = ["cli", "uuid/serde"]
 cli = ["dep:clap", "tokio/signal", "dep:crossterm", "dep:futures-core", "dep:futures"]
 ci_tests = []
-chrono = ["dep:chrono"]
 
 [dependencies]
-chrono = { version = "0.4.38", optional = true }
 clap = { version = "4.5.4", optional = true, features = ["derive"] }
 crossterm = { version = "0.27.0", features = ["event-stream"], optional = true}
 deadqueue = "0.2.4"
