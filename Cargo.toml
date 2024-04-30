@@ -15,7 +15,9 @@ path = "bin/serve.rs"
 required-features = ["example"]
 
 [features]
-debug = ["multicast/debug", "logger/debug"]
+debug = ["logger/debug"]
+debug_multicast = ["multicast/debug", "logger/debug"]
+debug_all = ["debug", "debug_multicast"]
 example = ["local-ip-address"]
 
 [dependencies]
@@ -36,6 +38,7 @@ tonic = "0.11.0"
 
 [dev-dependencies]
 futures = "0.3.30"
+serial_test = "3.1.1"
 
 [build-dependencies]
 tonic-build = "0.11.0"

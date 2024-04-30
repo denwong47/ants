@@ -87,6 +87,7 @@ async fn test_multi_nodes(worker_count: usize) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial_test::serial]
 async fn test_4_nodes() {
     test_multi_nodes(4).await;
 }

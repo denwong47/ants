@@ -18,6 +18,9 @@ use tokio::sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 
 pub mod checkout;
 
+mod metadata;
+pub use metadata::*;
+
 pub type NodeAddress = (String, u16);
 pub type NodeRecord = (tokio::time::Instant, NodeAddress);
 
@@ -34,7 +37,7 @@ pub type NodeRecord = (tokio::time::Instant, NodeAddress);
 #[derive(Debug)]
 pub struct NodeList {
     heap: Mutex<BinaryHeap<Reverse<NodeRecord>>>,
-    set: RwLock<FxHashMap<NodeAddress, tokio::time::Instant>>,
+    set: RwLock<FxHashMap<NodeAddress, NodeMetadata>>,
 }
 
 impl NodeList {
@@ -47,7 +50,11 @@ impl NodeList {
     pub fn from_vec(nodes: Vec<NodeAddress>) -> Self {
         let time = tokio::time::Instant::now();
         let heap = BinaryHeap::from_iter(nodes.iter().map(|node| Reverse((time, node.clone()))));
-        let set = FxHashMap::from_iter(nodes.into_iter().map(|node| (node, time)));
+        let set = FxHashMap::from_iter(
+            nodes
+                .into_iter()
+                .map(|node| (node, NodeMetadata::with_last_used(time))),
+        );
 
         Self {
             heap: Mutex::new(heap),
@@ -71,7 +78,7 @@ impl NodeList {
         &self,
     ) -> (
         MutexGuard<BinaryHeap<Reverse<NodeRecord>>>,
-        RwLockWriteGuard<FxHashMap<NodeAddress, tokio::time::Instant>>,
+        RwLockWriteGuard<FxHashMap<NodeAddress, NodeMetadata>>,
     ) {
         (self.heap.lock().await, self.set.write().await)
     }
@@ -87,10 +94,25 @@ impl NodeList {
             let record = (time, node.clone());
 
             heap.push(Reverse(record));
-            set.insert(node.clone(), time).is_none()
+            set.insert(node.clone(), NodeMetadata::with_last_used(time))
+                .is_none()
         } else {
             false
         }
+    }
+
+    /// Insert a node by metadata into the list.
+    ///
+    /// This will automatically update the last used time of the node.
+    pub async fn insert_node(&self, node: NodeAddress, mut metadata: NodeMetadata) -> bool {
+        let (mut heap, mut set) = self.lock_for_write().await;
+
+        let time = tokio::time::Instant::now();
+        let record = (time, node.clone());
+        metadata.update_last_used_to(time);
+
+        heap.push(Reverse(record));
+        set.insert(node.clone(), metadata).is_none()
     }
 
     /// Remove a node from the list.
@@ -106,15 +128,18 @@ impl NodeList {
     }
 
     /// Get the next least-used node, along with the duration since it was last used.
-    pub async fn next_with_duration(&self) -> Option<(tokio::time::Duration, NodeAddress)> {
+    pub async fn next_with_metadata(&self) -> Option<(NodeMetadata, NodeAddress)> {
         let (mut heap, mut set) = self.lock_for_write().await;
 
         while let Some(Reverse((time, node))) = heap.pop() {
             // Check if the node is still in the set first. If not, then discard it.
-            if let Some(last_inserted) = set.get(&node) {
-                if time >= *last_inserted {
-                    set.remove(&node);
-                    return Some((time.elapsed(), node));
+            if let Some(metadata) = set.get(&node) {
+                if time >= metadata.last_used() {
+                    let metadata_opt = set.remove(&node);
+
+                    if let Some(metadata) = metadata_opt {
+                        return Some((metadata, node));
+                    }
                 }
                 // If the heap node was found to be older than the last inserted time in
                 // the set, then we know that the node was at some point removed from the
@@ -129,7 +154,7 @@ impl NodeList {
 
     /// Get the next least-used node.
     pub async fn next(&self) -> Option<NodeAddress> {
-        self.next_with_duration().await.map(|(_, node)| node)
+        self.next_with_metadata().await.map(|(_, node)| node)
     }
 
     /// Get the number of nodes in the list.
@@ -144,7 +169,11 @@ impl NodeList {
 
     /// Get the age of a specific node in the list.
     pub async fn last_used(&self, node: &NodeAddress) -> Option<tokio::time::Instant> {
-        self.set.read().await.get(node).copied()
+        self.set
+            .read()
+            .await
+            .get(node)
+            .map(|metadata| metadata.last_used())
     }
 
     /// Get the age of the least-used node.

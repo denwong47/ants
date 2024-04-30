@@ -29,7 +29,7 @@ pub enum AntsError {
     CalledWhileBusy,
     #[error("Reservation token does not match, cannot release reservation.")]
     ReservationTokenMismatch,
-    #[error("Task exeuction error: {0}")]
+    #[error("Task execution error: {0}")]
     TaskExecutionError(String),
     #[error("Work data is not valid: {0}")]
     InvalidWorkData(String),
@@ -57,4 +57,10 @@ pub enum AntsError {
     MulticasterAddressError(String),
     #[error("Could not send Multicast message: {0}")]
     MulticastSendError(String),
+
+    // Consensus
+    #[error("Consensus of {0} not reached after {1} retries, with results from {2:?}")]
+    ConsensusNotReached(usize, usize, Vec<String>),
+    #[error("Only {0} results are agreed upon.")]
+    ConsensusPending(usize),
 }

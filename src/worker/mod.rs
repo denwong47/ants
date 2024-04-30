@@ -3,6 +3,8 @@
 mod model;
 pub use model::*;
 
+mod simple_consensus;
+
 pub mod token;
 
 mod broadcast;
