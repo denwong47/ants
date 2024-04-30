@@ -1,5 +1,6 @@
 0   trace   249 TRACE
 10	debug	245	DEBUG
 20	info	15	INFO
+21  success 40  SUCCESS
 30	warn	11	WARN
 40	error	9	ERROR

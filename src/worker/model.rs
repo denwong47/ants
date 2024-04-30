@@ -16,7 +16,7 @@ use super::{
     token as reservation_token, WorkerBroadcastMessage,
 };
 use crate::{
-    nodes::{NodeAddress, NodeList},
+    nodes::{NodeAddress, NodeList, NodeMetadata},
     postbox::{traits::*, PostBox},
     token as message_token, AntsError,
 };
@@ -195,7 +195,7 @@ where
         func: F,
         timeout: tokio::time::Duration,
     ) -> Result<Arc<Self>, AntsError> {
-        Self::new(
+        let arc_self = Self::new(
             host,
             port,
             nodes,
@@ -206,7 +206,11 @@ where
         )?
         .init_arc()
         .init_broadcast()
-        .await
+        .await?;
+
+        // arc_self.start().await?;
+
+        Ok(arc_self)
     }
 
     /// Get the name of this worker.
@@ -233,17 +237,24 @@ where
         let addr = format!("http://{}:{}", to.0, to.1);
         proto::worker_ant_client::WorkerAntClient::connect(addr)
             .await
-            .map_err(|err| AntsError::ConnectionError(to.0, to.1, err.to_string()))
+            .map_err(|err| AntsError::ConnectionError(to.0, to.1, format!("{:?}", err)))
     }
 
-    /// Get the next node to use from th [`NodeList`].
+    /// Get the next node to use from the [`NodeList`].
     pub async fn next_node(&self) -> Option<NodeAddress> {
         self.nodes.next().await
     }
 
+    /// Get the next node with the metadata from the [`NodeList`].
+    pub async fn next_node_with_metadata(&self) -> Option<(NodeMetadata, NodeAddress)> {
+        self.nodes.next_with_metadata().await
+    }
+
     /// Get the next node with the duration since the last call.
     pub async fn next_node_with_duration(&self) -> Option<(tokio::time::Duration, NodeAddress)> {
-        self.nodes.next_with_duration().await
+        self.next_node_with_metadata()
+            .await
+            .map(|(metadata, node)| (metadata.last_used().elapsed(), node))
     }
 
     /// Add a node back to the [`NodeList`].
@@ -266,13 +277,13 @@ where
         for tries in 0..RESERVE_ATTEMPTS {
             if let Some(checked_out_node) = self.nodes.checkout().await {
                 // DDoS prevention.
-                if tries > 0 && checked_out_node.since_last_used < RESERVE_TIMEOUT {
+                if tries > 0 && checked_out_node.since_last_used() < RESERVE_TIMEOUT {
                     logger::info!(
                         "The top node was queried {duration:?} ago, waiting for {timeout:?} before trying again.",
-                        duration = checked_out_node.since_last_used,
+                        duration = checked_out_node.since_last_used(),
                         timeout = RESERVE_TIMEOUT,
                     );
-                    tokio::time::sleep(RESERVE_TIMEOUT - checked_out_node.since_last_used).await;
+                    tokio::time::sleep(RESERVE_TIMEOUT - checked_out_node.since_last_used()).await;
                 }
 
                 // this needs to contact the node and reserve it.

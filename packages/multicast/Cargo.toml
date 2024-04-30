@@ -38,4 +38,4 @@ prost-build = "0.12.4"
 
 [dev-dependencies]
 serde = { version = "1.0.197", features = ["derive"] }
-serial_test = "3.0.0"
+serial_test = "3.1.1"

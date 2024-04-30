@@ -41,9 +41,16 @@ of failure.
       clustered in the same subnet and have the same latency.
 - [X] The nodes should discover each other using multicast, rather than
       a static list.
-- [ ] The system should be able to ask multiple nodes to do the same work, until
+- [ ] The nodes should keep track of the correctness of each other, and remove a
+      node from the list if it regularly fails to reserve, timeout or return
+      corrupted results.
+- [X] The system should be able to ask multiple nodes to do the same work, until
       some results agree with each other. This is to prevent a node from returning
       corrupted results.
+- [ ] The above simple consensus is working, but it places a heavy bias on the host node
+      that was called first. This is due to the current reservation system favouring
+      the local node before handing work off to another node. The reservation
+      system will need to be reworked to be more fair._
 - [X] Integration and unit tests.
 
 ### Pre-requisites

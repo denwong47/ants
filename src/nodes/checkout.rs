@@ -2,12 +2,13 @@
 //!
 //! Upon [`Drop`], the node is automatically added back to the list of available nodes.
 
-use super::{NodeAddress, NodeList};
+use super::{NodeAddress, NodeList, NodeMetadata};
+use core::panic;
 use std::sync::{Arc, OnceLock};
 
 pub struct CheckedOutNode {
     node: OnceLock<NodeAddress>,
-    pub since_last_used: tokio::time::Duration,
+    pub metadata: NodeMetadata,
     list: Arc<NodeList>,
 }
 
@@ -29,6 +30,16 @@ impl CheckedOutNode {
         self.address().1
     }
 
+    /// Get the [`tokio::time::Instant`] when the node was last used.
+    pub fn last_used(&self) -> tokio::time::Instant {
+        self.metadata.last_used()
+    }
+
+    /// Get the [`tokio::time::Duration`] since the node was last used.
+    pub fn since_last_used(&self) -> tokio::time::Duration {
+        self.last_used().elapsed()
+    }
+
     /// Consume the checked out node, and not add it back to the list of available nodes.
     pub fn consume(mut self) -> NodeAddress {
         self.node
@@ -42,26 +53,35 @@ impl CheckedOutNode {
     /// It is generally recommended to use this over the [`Drop`] implementation, as this
     /// does not wait for a spawned task to complete; which may result in the node not
     /// being re-inserted until the next `await` call.
-    pub async fn complete(mut self) -> NodeAddress {
+    pub async fn complete(self) -> NodeAddress {
         let node = self
             .node
-            .take()
-            .expect("Checked out node was consumed before being used.");
+            .get()
+            .cloned()
+            .unwrap_or_else(|| panic!("Checked out node was consumed before being used."));
 
-        self.list.insert(node.clone()).await;
+        let list = Arc::clone(&self.list);
+        list.reinsert_checked_out(self).await;
         node
     }
 
     /// Discard the checked out node, and add it back to the list of available nodes.
     ///
     /// Similar to [`Self::complete`], but this does not return the node.
-    pub async fn discard(mut self) {
+    pub async fn discard(self) {
+        let list = Arc::clone(&self.list);
+        list.reinsert_checked_out(self).await;
+    }
+
+    /// Decompose the checked out node into its parts.
+    pub fn decompose(mut self) -> (NodeAddress, NodeMetadata) {
         let node = self
             .node
             .take()
             .expect("Checked out node was consumed before being used.");
+        let metadata = self.metadata.clone();
 
-        self.list.insert(node).await;
+        (node, metadata)
     }
 }
 
@@ -69,13 +89,14 @@ impl Drop for CheckedOutNode {
     /// Add the node back to the list of available nodes.
     ///
     /// This is called when the checked out node is dropped; and this expects a
-    /// [`tokio::runtime::Handle`] to be available.
+    /// [`tokio::runtime::Runtime`] to be available.
     fn drop(&mut self) {
+        let metadata = self.metadata.clone();
         if let Some(node) = self.node.take() {
             tokio::spawn({
                 let list = Arc::clone(&self.list);
                 async move {
-                    list.insert(node).await;
+                    list.insert_node(node, metadata).await;
                 }
             });
         }
@@ -96,13 +117,25 @@ impl NodeList {
     ///
     /// This can only be used if the [`NodeList`] is referenced as an [`Arc`].
     pub async fn checkout(self: &Arc<Self>) -> Option<CheckedOutNode> {
-        let (since_last_used, node) = self.next_with_duration().await?;
+        let (metadata, node) = self.next_with_metadata().await?;
 
         Some(CheckedOutNode {
             node: OnceLock::from(node),
-            since_last_used,
+            metadata,
             list: Arc::clone(self),
         })
+    }
+
+    /// Re-insert a checked out node back into the list.
+    ///
+    /// # Panics
+    ///
+    /// If the checked out node was consumed before being used - i.e. the node
+    /// no longer has an address.
+    pub async fn reinsert_checked_out(&self, node: CheckedOutNode) {
+        let (node, metadata) = node.decompose();
+
+        self.insert_node(node, metadata).await;
     }
 }
 
@@ -157,7 +190,7 @@ mod test {
             .await
             .expect("Node 1 was not inserted into the list.");
 
-        // Checkout the second node, and use the `discard` method to add it back to the list.
+        // Checkout the second node, and use the `complete` method to add it back to the list.
         '_checkout_1: {
             let node = list.checkout().await.unwrap();
 

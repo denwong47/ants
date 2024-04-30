@@ -40,6 +40,10 @@ where
 
     /// Announce the worker to the multicast group.
     pub async fn announce_join(&self) -> Result<(), AntsError> {
+        logger::debug!(
+            "Announcing ourself to the multicast group as {name}...",
+            name = self.name()
+        );
         self.broadcast(WorkerBroadcastMessage::Heartbeat {
             host: self.host(),
             port: self.port(),
@@ -54,6 +58,10 @@ where
     /// This method is provided for completeness, but the destructor [`Self::drop`]
     /// does not actaully use it due to lifetime constraints.
     pub async fn announce_leave(&self) -> Result<(), AntsError> {
+        logger::debug!(
+            "Announcing ourself leaving the multicast group as {name}...",
+            name = self.name()
+        );
         self.broadcast(WorkerBroadcastMessage::Leave {
             host: self.host(),
             port: self.port(),
@@ -67,12 +75,32 @@ where
             WorkerBroadcastMessage::Heartbeat { host, port } => {
                 // If we indeed have added the node, then the new node also
                 // needs to know about us.
+                #[cfg(feature = "debug")]
+                let other_name = format!("worker://{}:{}", &host, port);
+
                 if self.add_node((host, port)).await {
+                    logger::debug!(
+                        "{our_name} found new node at {other_name} joining the multicast group; multicast group now contains {count} nodes.",
+                        our_name=self.name(),
+                        other_name=other_name,
+                        count=self.nodes.len().await,
+                    );
+
                     self.announce_join().await.unwrap();
                 }
             }
             WorkerBroadcastMessage::Leave { host, port } => {
+                #[cfg(feature = "debug")]
+                let other_name = format!("worker://{}:{}", &host, port);
+
                 self.remove_node(&(host, port)).await;
+
+                logger::debug!(
+                    "{our_name} removed node at {other_name} from the multicast group; multicast group now contains {count} nodes.",
+                    our_name=self.name(),
+                    other_name=other_name,
+                    count=self.nodes.len().await,
+                )
             }
         }
     }
