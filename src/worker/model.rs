@@ -291,6 +291,7 @@ where
                 // threads from attempting to reserve it.
                 let mut client = match tokio::select! {
                     _ = tokio::time::sleep(RESERVE_TIMEOUT) => {
+                        // TODO The node did not respond. Downrate the node.
                         Err(AntsError::ConnectionError(
                             checked_out_node.host().to_owned(),
                             checked_out_node.port(),
@@ -306,6 +307,8 @@ where
                         client
                     }
                     Err(_err) => {
+                        // TODO The node had a connection error. Downrate the node.
+
                         // Put the node back in the heap, but this time with a new timestamp.
                         let _address = checked_out_node.complete().await;
                         logger::warn!(
@@ -325,18 +328,32 @@ where
                 // possible to do so while our reservation is in place.
                 let address = checked_out_node.complete().await;
 
-                // Now that we have put the node back in the heap, we can check the
-                // reservation result.
-                let response = reservation_result?.into_inner();
+                // We can't short circuit `reservation_result?` here because this will
+                // break the retry loop immediately.
+                match reservation_result {
+                    Ok(response) => {
+                        // Now that we have put the node back in the heap, we can check the
+                        // reservation result.
+                        let reservation_reply = response.into_inner();
 
-                if response.success {
-                    return Ok((address, response.token));
-                } else {
-                    logger::debug!(
-                        "Node {}:{} is reserved, trying next node.",
-                        &address.0,
-                        &address.1
-                    );
+                        if reservation_reply.success {
+                            return Ok((address, reservation_reply.token));
+                        } else {
+                            logger::debug!(
+                                "Node {}:{} is reserved, trying next node.",
+                                &address.0,
+                                &address.1
+                            );
+                        }
+                    }
+                    Err(_status) => {
+                        logger::warn!(
+                            "Failed to reserve node {}:{} due to {}, trying next node.",
+                            &address.0,
+                            &address.1,
+                            _status
+                        );
+                    }
                 }
             } else {
                 // There is literally no nodes in the heap.
