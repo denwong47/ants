@@ -133,7 +133,7 @@ mod test {
             };
 
             let mut bad_result = expected.clone();
-            bad_result.body = "Bad Body".to_owned();
+            "Bad Body".clone_into(&mut bad_result.body);
 
             // This is to simulate the remote worker sending a message to the postbox.
             async move {
