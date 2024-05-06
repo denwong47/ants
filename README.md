@@ -1,6 +1,6 @@
 ## Ants
 
-![Rust CI Badge](https://github.com/denwong47/ants/actions/workflows/rust-CI.yml/badge.svg?branch=master)
+![Rust CI Badge](https://github.com/denwong47/ants/actions/workflows/rust-CI.yml/badge.svg?branch=main)
 
 A naive implementation of distributed system to do arbitrary work.
 
