@@ -40,33 +40,19 @@ async fn test_multi_nodes(worker_count: usize) {
 
     let inner_worker = Arc::clone(workers.first().unwrap());
 
-    let results = tokio::select! {
-        _ = async move { futures::future::join_all(workers.iter().map(
-            |worker| worker.start()
-        )).await } => {
-            panic!("Workers should not return.")
-        },
-        results = async {
-            logger::debug!("Waiting for workers to start.");
-            tokio::time::sleep(WAIT_FOR_WORKER).await;
-            logger::debug!("Workers should be running now.");
+    let results = async {
+        logger::debug!("Waiting for workers to start.");
+        tokio::time::sleep(WAIT_FOR_WORKER).await;
+        logger::debug!("Workers should be running now.");
 
-            futures::future::join_all(
-                (0..worker_count+1)
-                .map(
-                    |_| Arc::clone(&inner_worker)
-                )
-                .map(
-                    |worker| async move {
-                        worker.find_worker_and_work(16).await
-                    }
-                )
-            )
-            .await
-        } => {
-            results
-        }
-    };
+        futures::future::join_all(
+            (0..worker_count + 1)
+                .map(|_| Arc::clone(&inner_worker))
+                .map(|worker| async move { worker.find_worker_and_work(16).await }),
+        )
+        .await
+    }
+    .await;
 
     let commissioned_workers = results
         .into_iter()

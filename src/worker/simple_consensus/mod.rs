@@ -180,38 +180,22 @@ mod test {
         // Use a rogue worker to find the correct workers.
         let inner_worker = std::sync::Arc::clone(_correct_workers.first().unwrap());
 
-        let _results = tokio::select!(
-            _ = futures::future::join_all(
-                _rogue_workers.iter().map(
-                    |worker| worker.start()
-                )
-            ) => {
-                panic!("Rogue workers' listening futures should not return.")
-            },
-            _ = futures::future::join_all(
-                _correct_workers.iter().map(
-                    |worker| worker.start()
-                )
-            ) => {
-                panic!("Correct workers' listening futures should not return.")
-            },
-            answer = async move {
-                // Let all the multicast handshake finish.
-                tokio::time::sleep(
-                    tokio::time::Duration::from_millis(500)
-                ).await;
-                logger::info!(
-                    "Starting consensus test."
-                );
-                inner_worker.find_workers_and_reach_consensus(1024, 6, 12).await.expect(
-                    "Workers failed to work and reach consensus."
-                )
-            } => {
-                answer
-            }
-        );
+        let _results = async move {
+            // Let all the multicast handshake finish.
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            logger::info!("Starting consensus test.");
+            inner_worker
+                .find_workers_and_reach_consensus(1024, 6, 12)
+                .await
+                .expect("Workers failed to work and reach consensus.")
+        }
+        .await;
 
         // The consensus should be 1025, as the correct workers will agree on the correct value.
         assert_eq!(_results, 1025);
+
+        // Terminating the workers.
+        _rogue_workers.iter().for_each(|worker| worker.teardown());
+        _correct_workers.iter().for_each(|worker| worker.teardown());
     }
 }

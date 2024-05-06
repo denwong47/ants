@@ -9,6 +9,7 @@ use std::{
         Arc, OnceLock,
     },
 };
+use tokio::sync::Notify;
 use tonic::{Request, Response, Status};
 
 use super::{
@@ -83,6 +84,12 @@ where
     pub postbox: Arc<PostBox>,
     _phantom: std::marker::PhantomData<(T, R)>,
 
+    /// The handle for the gRPC listeners.
+    _listener_handle: OnceLock<tokio::task::JoinHandle<Result<(), AntsError>>>,
+
+    /// A flag to signal termination.
+    pub(crate) _termination_flag: Arc<Notify>,
+
     /// An atomic cyclical reference to itself.
     ///
     /// This is used for the [`Worker`] to spawn tasks that can refer back to itself,
@@ -148,6 +155,8 @@ where
             work_timeout: timeout,
             broadcaster: Arc::new(broadcaster),
             postbox: PostBox::new_arc(),
+            _listener_handle: OnceLock::new(),
+            _termination_flag: Arc::new(Notify::new()),
             _phantom: std::marker::PhantomData,
             _cyclical: OnceLock::new(),
         };
@@ -206,9 +215,9 @@ where
         )?
         .init_arc()
         .init_broadcast()
-        .await?;
-
-        // arc_self.start().await?;
+        .await?
+        .init_listener()
+        .await;
 
         Ok(arc_self)
     }
@@ -572,6 +581,12 @@ where
             }
         }
     }
+
+    /// Subscribe to the termination signal. This will return a future that will
+    /// only resolve when the worker is terminated.
+    pub async fn wait_for_termination(&self) {
+        self._termination_flag.notified().await;
+    }
 }
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
@@ -586,23 +601,49 @@ where
     E: std::fmt::Display + std::fmt::Debug + 'static,
     Self: std::marker::Sync + std::marker::Send,
 {
+    /// Initialize the broadcast agent in the background.
+    ///
+    /// This chain method will start the broadcast agent in the background, and return
+    /// the same [`Arc<Worker>`] instance for further chaining.
+    pub async fn init_listener(self: Arc<Self>) -> Arc<Self> {
+        let listener_self = Arc::clone(&self);
+        self._listener_handle
+            .get_or_init(|| tokio::spawn(listener_self.listener()));
+        self
+    }
+
     /// Start the worker server to listen.
-    pub async fn start(self: &Arc<Self>) -> Result<(), AntsError> {
+    ///
+    /// This method will start the gRPC server to listen for incoming requests, and not
+    /// return until the server is shut down.
+    ///
+    /// There is typically no need to call this method directly, as it is called by
+    /// [`Self::init_listener`] and in turn [`Self::new_and_init`].
+    pub async fn listener(self: Arc<Self>) -> Result<(), AntsError> {
         logger::info!(
             "Starting RPC server on {}:{}...",
             self.address.0,
             self.address.1
         );
-        tonic::transport::Server::builder()
-            .add_service(proto::worker_ant_server::WorkerAntServer::from_arc(
-                self.clone(),
-            ))
-            .serve(std::net::SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)),
-                self.address.1,
-            ))
-            .await
-            .map_err(|err| AntsError::TonicServerStartUpError(err.to_string()))
+        tokio::select! {
+            _ = self.wait_for_termination() => {
+                // If the worker is terminated, we will return Ok(()).
+                logger::debug!("Shutting down RPC server on {}:{}...", self.address.0, self.address.1);
+                Ok(())
+            },
+            err = tonic::transport::Server::builder()
+                .add_service(proto::worker_ant_server::WorkerAntServer::from_arc(
+                    self.clone(),
+                ))
+                .serve(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)),
+                    self.address.1,
+                ))
+            => {
+                // If the server fails to start, we will return an [`AntsError`].
+                err.map_err(|err| AntsError::TonicServerStartUpError(err.to_string()))
+            }
+        }
     }
 }
 

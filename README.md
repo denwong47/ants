@@ -61,38 +61,64 @@ The `protobuf` crate requires `protoc` to be installed. See [Protocol Buffer Com
 
 In two separate terminals, run the following commands:
 ```bash
-cargo run --bin serve --features=example -- --port 5355 --grpc-port 50051 127.0.0.1:50051 127.0.0.1:50052
+cargo run --bin serve --features=example -- --port 5355 --grpc-port 50051
 ```
 
 ```bash
-cargo run --bin serve --features=example -- --port 5356 --grpc-port 50052 127.0.0.1:50051 127.0.0.1:50052
+cargo run --bin serve --features=example -- --port 5356 --grpc-port 50052
 ```
 
 This will host two identical nodes, each listening on a different port. In
 practice, these would be container images hosted within the same cluster on
-different machines.
+different machines. In the following example, we will have 3 nodes setup.
+
+Upon initiation, each of the node will send out multicasts to announce their presence,
+to which any existing nodes will reply by the same. This will allow each of the node
+to build up a list of nodes that they can relay work to.
 
 Each of these nodes can receive requests on their respective `port`s. The
 `grpc-port` is used for gRPC communication between the nodes. If any of them
 are occupied with a request, it will forward the request to other nodes.
 
-In separate terminals, run the following command twice:
-```bash
-curl -X POST -H "Content-Type: application/json" -d '{"body": "test"}' http://localhost:5355/send
+In Python, or whatever flavour of cURL you desire, send multiple concurrent requests
+to any of the node asking for work to be done:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+import requests
+
+with ThreadPoolExecutor() as executor:
+    responses = list(executor.map(
+        lambda x: requests.post(
+            "http://localhost:5355/send",
+            json={"body": f"test {x}"}
+        ).json(),
+        range(5)
+    ))
 ```
 
-By sending the same node two requests, you can see that the first request will
+By sending the same node multiple requests, you can see that the first request will
 be handled by the first node, and the second request will be forwarded to the
 second node, resulting in a different `worker` tag in the response:
 
-```json
-{"success": true,
- "worker": "worker://0.0.0.0:50051",
- "body": "Work done: test"}
+```python
+[{'success': True,
+  'worker': 'worker://0.0.0.0:50051',
+  'body': 'Work done: test 0'},
+ {'success': True,
+  'worker': 'worker://0.0.0.0:50052',
+  'body': 'Work done: test 1'},
+ {'success': True,
+  'worker': 'worker://0.0.0.0:50053',
+  'body': 'Work done: test 2'},
+ {'success': True,
+  'worker': 'worker://0.0.0.0:50052',
+  'body': 'Work done: test 3'},
+ {'success': True,
+  'worker': 'worker://0.0.0.0:50053',
+  'body': 'Work done: test 4'}]
 ```
 
-```json
-{"success": true,
- "worker": "worker://0.0.0.0:50052",
- "body": "Work done: test"}
-```
+Since we have more work than we have nodes, some work will have to wait until some nodes
+can be recycled. This is done transparently in the background - the only drawback is
+longer latency for those calls.
