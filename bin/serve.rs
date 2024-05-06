@@ -8,7 +8,7 @@ use axum::{
     Router,
 };
 use clap::Parser;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use ants::{
     config,
@@ -73,7 +73,7 @@ where
 async fn main() -> Result<(), AntsError> {
     let args = CliArgs::parse();
 
-    let worker = Arc::new(Worker::new(
+    let worker = Worker::new_and_init(
         args.host.clone(),
         args.grpc_port,
         args.node_addresses()?,
@@ -81,7 +81,8 @@ async fn main() -> Result<(), AntsError> {
         config::DEFAULT_MULTICAST_PORT,
         do_work,
         tokio::time::Duration::from_secs(6),
-    )?);
+    )
+    .await?;
 
     logger::info!(
         "Worker created: {:?}, aware of {} nodes.",
@@ -115,9 +116,9 @@ async fn main() -> Result<(), AntsError> {
             logger::info!("Axum server has shut down, terminating.");
             Err(AntsError::Termination("Axum server has shut down.".to_owned()))
         },
-        _ = async move { worker.start().await } => {
-            logger::info!("Worker has shut down, terminating.");
-            Err(AntsError::Termination("Worker has shut down.".to_owned()))
-        }
     }
+    .expect("Failed to run the server.");
+
+    worker.teardown();
+    Ok(())
 }
