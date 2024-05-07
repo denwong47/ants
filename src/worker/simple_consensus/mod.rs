@@ -77,7 +77,7 @@ where
             // This should assert to be positive, as we have already checked
             // that no consensus has been reached.
             let handles = (0..attempts)
-                .map(|_| self.find_worker_and_work(body.clone()))
+                .map(|_| self.find_random_worker_and_work(body.clone()))
                 .collect::<Vec<_>>();
 
             logger::info!(
@@ -146,9 +146,12 @@ mod test {
         Ok(value.wrapping_add(1).wrapping_mul(-1))
     }
 
-    const CORRECT_COUNT: usize = 3;
+    const CORRECT_COUNT: usize = 4;
     const ROGUE_COUNT: usize = 2;
 
+    /// This test is in its nature non-deterministic, as it relies on randomness to
+    /// find the correct workers. It is possible that the test will fail if randomness
+    /// prefers the rogue workers over the correct workers.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     #[serial_test::serial]
     async fn consensus() {
@@ -178,7 +181,7 @@ mod test {
         .expect("Failed to create correct workers.");
 
         // Use a rogue worker to find the correct workers.
-        let inner_worker = std::sync::Arc::clone(_correct_workers.first().unwrap());
+        let inner_worker = std::sync::Arc::clone(_rogue_workers.first().unwrap());
 
         let _results = async move {
             // Let all the multicast handshake finish.

@@ -38,3 +38,6 @@ pub use worker::*;
 
 mod errors;
 pub use errors::AntsError;
+
+#[cfg(test)]
+pub mod _tests;
