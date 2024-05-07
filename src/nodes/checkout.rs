@@ -6,6 +6,7 @@ use super::{NodeAddress, NodeList, NodeMetadata};
 use core::panic;
 use std::sync::{Arc, OnceLock};
 
+#[derive(Debug)]
 pub struct CheckedOutNode {
     node: OnceLock<NodeAddress>,
     pub metadata: NodeMetadata,
@@ -126,6 +127,19 @@ impl NodeList {
         })
     }
 
+    /// Check out a random node.
+    ///
+    /// This can only be used if the [`NodeList`] is referenced as an [`Arc`].
+    pub async fn checkout_random(self: &Arc<Self>) -> Option<CheckedOutNode> {
+        let (metadata, node) = self.random_with_metadata().await?;
+
+        Some(CheckedOutNode {
+            node: OnceLock::from(node),
+            metadata,
+            list: Arc::clone(self),
+        })
+    }
+
     /// Re-insert a checked out node back into the list.
     ///
     /// # Panics
@@ -141,12 +155,16 @@ impl NodeList {
 
 #[cfg(test)]
 mod test {
+    use serial_test::serial;
+
+    use crate::{Worker, _tests::*, config};
+
     use super::super::test::NODES;
     use super::*;
 
     #[tokio::test]
     async fn checked_out_node() {
-        let nodes = test::NODES
+        let nodes: Vec<(String, u16)> = test::NODES
             .iter()
             .map(|(host, port)| (host.to_string(), *port))
             .collect::<Vec<_>>();
@@ -241,5 +259,69 @@ mod test {
 
         // The first node should be back to the top.
         assert_eq!(next, nodes[0]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[serial]
+    async fn check_out_random_node() {
+        const WORKER_COUNT: usize = 5;
+
+        let workers = Worker::new_and_init_multiple(
+            WORKER_COUNT,
+            BASE_HOST.to_owned(),
+            BASE_PORT,
+            vec![],
+            config::DEFAULT_MULTICAST_HOST.to_owned(),
+            config::DEFAULT_MULTICAST_PORT,
+            pow_2,
+            WORK_TIMEOUT,
+        )
+        .await
+        .expect("Failed to create workers.");
+
+        tokio::time::sleep(WAIT_FOR_WORKER).await;
+
+        let inner_worker = Arc::clone(workers.first().unwrap());
+
+        assert_eq!(inner_worker.nodes.len().await, WORKER_COUNT - 1); // Do not count itself.
+
+        {
+            let ordered_checkout = inner_worker
+                .nodes
+                .checkout()
+                .await
+                .expect("Failed to checkout ordered node.");
+            let random_checkout = inner_worker
+                .nodes
+                .checkout_random()
+                .await
+                .expect("Failed to checkout random node.");
+
+            assert!(ordered_checkout.address() != random_checkout.address());
+
+            assert_eq!(inner_worker.nodes.len().await, WORKER_COUNT - 3); // Do not count itself.
+
+            // Make sure the random node does not come up again.
+            let mut count = 0;
+            while let Some(remaining) = inner_worker.nodes.checkout().await {
+                count += 1;
+                assert!(![ordered_checkout.address(), random_checkout.address()]
+                    .contains(&remaining.address()))
+            }
+
+            assert_eq!(count, WORKER_COUNT - 3);
+        }
+
+        // This is to ensure that the task spawned by the `CheckedOutNode::drop` is completed.
+        tokio::time::sleep(WAIT_FOR_WORKER).await;
+
+        assert_eq!(inner_worker.nodes.len().await, WORKER_COUNT - 1); // Do not count itself.
+
+        // Teardown.
+        logger::debug!("Waiting for the spawned tasks to complete.");
+
+        for worker in workers.into_iter() {
+            worker.teardown();
+        }
     }
 }

@@ -11,7 +11,7 @@ use crate::AntsError;
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
     FO: std::future::Future<Output = Result<R, E>> + std::marker::Sync + std::marker::Send,
     F: Fn(T) -> FO,
@@ -65,7 +65,7 @@ where
 }
 impl<T, R, F, FO, E> Drop for Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
     FO: std::future::Future<Output = Result<R, E>> + std::marker::Sync + std::marker::Send,
     F: Fn(T) -> FO,

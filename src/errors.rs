@@ -21,6 +21,10 @@ pub enum AntsError {
     Tokio(#[from] tokio::task::JoinError),
     #[error("Worker error: {0}")]
     WorkerError(String),
+    #[error("worker://{0}:{1} cannot be reserve: {2}.")]
+    WorkerReservationError(String, u16, String),
+    #[error("worker://{0}:{1} already reserved.")]
+    WorkerAlreadyReserved(String, u16),
     #[error("No nodes available to execute the task.")]
     NoNodesAvailable,
     #[error("Inner function was called without a reservation.")]
@@ -29,6 +33,8 @@ pub enum AntsError {
     CalledWhileBusy,
     #[error("Reservation token does not match, cannot release reservation.")]
     ReservationTokenMismatch,
+    #[error("Task request error: {0}")]
+    TaskRequestError(String),
     #[error("Task execution error: {0}")]
     TaskExecutionError(String),
     #[error("Work data is not valid: {0}")]

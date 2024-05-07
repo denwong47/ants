@@ -17,7 +17,7 @@ pub enum WorkerBroadcastMessage {
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone + 'static,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
     FO: std::future::Future<Output = Result<R, E>>
         + std::marker::Sync

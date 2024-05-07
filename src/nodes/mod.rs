@@ -157,6 +157,33 @@ impl NodeList {
         self.next_with_metadata().await.map(|(_, node)| node)
     }
 
+    /// Get a random node from the list.
+    ///
+    /// This will only remove the node from the set, but not the heap. This is because
+    /// [`Self::next_with_metadata`] will discard any nodes that are not in the set. As
+    /// long as the node is re-inserted into the set with a later timestamp, the heap
+    /// entry for this node will be discarded.
+    pub async fn random_with_metadata(&self) -> Option<(NodeMetadata, NodeAddress)> {
+        let (_, mut set) = self.lock_for_write().await;
+
+        if set.is_empty() {
+            return None;
+        }
+
+        let index = rand::random::<usize>() % set.len();
+        let node = set.keys().nth(index).unwrap().clone();
+
+        set.remove(&node).map(|metadata| (metadata, node.clone()))
+    }
+
+    /// Get a random node from the list.
+    ///
+    /// This is a convenience method that only returns the node address; see
+    /// [`Self::random_with_metadata`] for more control.
+    pub async fn random(&self) -> Option<NodeAddress> {
+        self.random_with_metadata().await.map(|(_, node)| node)
+    }
+
     /// Get the number of nodes in the list.
     pub async fn len(&self) -> usize {
         self.set.read().await.len()

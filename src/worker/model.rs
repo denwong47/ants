@@ -1,6 +1,7 @@
 //! The main worker model.
 //!
 
+use rand::Rng;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     net::SocketAddr,
@@ -17,7 +18,7 @@ use super::{
     token as reservation_token, WorkerBroadcastMessage,
 };
 use crate::{
-    nodes::{NodeAddress, NodeList, NodeMetadata},
+    nodes::{checkout::CheckedOutNode, NodeAddress, NodeList, NodeMetadata},
     postbox::{traits::*, PostBox},
     token as message_token, AntsError,
 };
@@ -60,7 +61,7 @@ const RESERVE_ATTEMPTS: usize = 32;
 /// reservation automatically.
 pub struct Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone + 'static,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
     FO: std::future::Future<Output = Result<R, E>>
         + std::marker::Sync
@@ -99,7 +100,7 @@ where
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone + 'static,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
     FO: std::future::Future<Output = Result<R, E>>
         + std::marker::Sync
@@ -281,8 +282,90 @@ where
         self.nodes.remove(node).await;
     }
 
+    /// Attempt to reserve a node based on a [`CheckedOutNode`] result.
+    pub async fn reserve_checked_out_node(
+        &self,
+        checked_out_node: CheckedOutNode,
+    ) -> Result<(NodeAddress, u64), AntsError> {
+        // this needs to contact the node and reserve it.
+        // Hold the node address during this step, preventing any other
+        // threads from attempting to reserve it.
+        let mut client = match tokio::select! {
+            _ = tokio::time::sleep(RESERVE_TIMEOUT) => {
+                // TODO The node did not respond. Downrate the node.
+                Err(AntsError::ConnectionError(
+                    checked_out_node.host().to_owned(),
+                    checked_out_node.port(),
+                    format!("did not respond within {RESERVE_TIMEOUT:?}")
+                ))
+            },
+            connection_result = self.build_client(checked_out_node.address().clone()) => {
+                connection_result
+            }
+        } {
+            Ok(client) => {
+                // Put the node back in the heap, but this time with a new timestamp.
+                client
+            }
+            Err(_err) => {
+                // TODO The node had a connection error. Downrate the node.
+
+                // Put the node back in the heap, but this time with a new timestamp.
+                let _address = checked_out_node.complete().await;
+                logger::warn!(
+                    "Failed to connect to node {}:{} due to {}, trying next node.",
+                    &_address.0,
+                    &_address.1,
+                    _err
+                );
+
+                return Err(_err);
+            }
+        };
+
+        let reservation_result = client.reserve(Request::new(proto::Empty {})).await;
+
+        // Put the node back in the heap, but this time with a new timestamp.
+        // While this node will be flagged as "reservable", it will not be
+        // possible to do so while our reservation is in place.
+        let address = checked_out_node.complete().await;
+
+        // We can't short circuit `reservation_result?` here because this will
+        // break the retry loop immediately.
+        match reservation_result {
+            Ok(response) => {
+                // Now that we have put the node back in the heap, we can check the
+                // reservation result.
+                let reservation_reply = response.into_inner();
+
+                if reservation_reply.success {
+                    Ok((address, reservation_reply.token))
+                } else {
+                    logger::debug!(
+                        "Node {}:{} is reserved, unable to reserve.",
+                        &address.0,
+                        &address.1
+                    );
+                    Err(AntsError::WorkerAlreadyReserved(
+                        address.0.to_owned(),
+                        address.1,
+                    ))
+                }
+            }
+            Err(_status) => {
+                let err = AntsError::WorkerReservationError(
+                    address.0.to_owned(),
+                    address.1,
+                    format!("{:?}", _status),
+                );
+                logger::warn!("{}", err);
+                Err(err)
+            }
+        }
+    }
+
     /// Attempt to reserve a node, and return the reservation token if successful.
-    pub async fn reserve_node(&self) -> Result<(NodeAddress, u64), AntsError> {
+    pub async fn reserve_next_node(&self) -> Result<(NodeAddress, u64), AntsError> {
         for tries in 0..RESERVE_ATTEMPTS {
             if let Some(checked_out_node) = self.nodes.checkout().await {
                 // DDoS prevention.
@@ -295,74 +378,9 @@ where
                     tokio::time::sleep(RESERVE_TIMEOUT - checked_out_node.since_last_used()).await;
                 }
 
-                // this needs to contact the node and reserve it.
-                // Hold the node address during this step, preventing any other
-                // threads from attempting to reserve it.
-                let mut client = match tokio::select! {
-                    _ = tokio::time::sleep(RESERVE_TIMEOUT) => {
-                        // TODO The node did not respond. Downrate the node.
-                        Err(AntsError::ConnectionError(
-                            checked_out_node.host().to_owned(),
-                            checked_out_node.port(),
-                            format!("did not respond within {RESERVE_TIMEOUT:?}")
-                        ))
-                    },
-                    connection_result = self.build_client(checked_out_node.address().clone()) => {
-                        connection_result
-                    }
-                } {
-                    Ok(client) => {
-                        // Put the node back in the heap, but this time with a new timestamp.
-                        client
-                    }
-                    Err(_err) => {
-                        // TODO The node had a connection error. Downrate the node.
-
-                        // Put the node back in the heap, but this time with a new timestamp.
-                        let _address = checked_out_node.complete().await;
-                        logger::warn!(
-                            "Failed to connect to node {}:{} due to {}, trying next node.",
-                            &_address.0,
-                            &_address.1,
-                            _err
-                        );
-                        continue;
-                    }
-                };
-
-                let reservation_result = client.reserve(Request::new(proto::Empty {})).await;
-
-                // Put the node back in the heap, but this time with a new timestamp.
-                // While this node will be flagged as "reservable", it will not be
-                // possible to do so while our reservation is in place.
-                let address = checked_out_node.complete().await;
-
-                // We can't short circuit `reservation_result?` here because this will
-                // break the retry loop immediately.
-                match reservation_result {
-                    Ok(response) => {
-                        // Now that we have put the node back in the heap, we can check the
-                        // reservation result.
-                        let reservation_reply = response.into_inner();
-
-                        if reservation_reply.success {
-                            return Ok((address, reservation_reply.token));
-                        } else {
-                            logger::debug!(
-                                "Node {}:{} is reserved, trying next node.",
-                                &address.0,
-                                &address.1
-                            );
-                        }
-                    }
-                    Err(_status) => {
-                        logger::warn!(
-                            "Failed to reserve node {}:{} due to {}, trying next node.",
-                            &address.0,
-                            &address.1,
-                            _status
-                        );
-                    }
+                if let Ok((address, token)) = self.reserve_checked_out_node(checked_out_node).await
+                {
+                    return Ok((address, token));
                 }
             } else {
                 // There is literally no nodes in the heap.
@@ -464,8 +482,8 @@ where
         result
     }
 
-    /// Hold the reservation and do work, before releasing it.
-    async fn reserve_and_work(&self, token: u64, body: T) -> Result<R, AntsError> {
+    /// With an existing reservation, ask this node to do work, before releasing it.
+    async fn do_work(&self, token: u64, body: T) -> Result<R, AntsError> {
         if token != self.reservation.load(Ordering::Acquire) {
             return Err(AntsError::ReservationTokenMismatch);
         }
@@ -477,6 +495,108 @@ where
         result
     }
 
+    /// With an existing reservation with a remote node, send the work request and wait
+    /// asynchronously for the result.
+    async fn do_work_on_remote(
+        &self,
+        address: (String, u16),
+        token: u64,
+        body: T,
+    ) -> Result<(String, R), AntsError> {
+        let result: Result<_, AntsError> = '_get_result: {
+            let mut client = self.build_client(address.clone()).await?;
+
+            let work_request_result = tokio::select! {
+                result = client.work(Request::new(proto::WorkRequest {
+                    token,
+                    body: serde_json::to_string(&body).map_err(
+                        |err| AntsError::InvalidWorkData(err.to_string())
+                    )?,
+                    host: self.address.0.clone(),
+                    port: self.address.1 as u32,
+                })) => { result.map_err(
+                    AntsError::Tonic
+                ) }
+                _ = tokio::time::sleep(self.work_timeout) => {
+                    Err(AntsError::ConnectionError(
+                        address.0.clone(),
+                        address.1,
+                        format!("did not respond within {work_timeout:?}", work_timeout=self.work_timeout)
+                    ))
+                },
+            }?;
+
+            Ok((token, work_request_result))
+        };
+
+        if let Ok((token, response)) = result {
+            let work_reply = response.into_inner();
+            if work_reply.success && work_reply.token == token {
+                // We have successfully reserved and sent work to a node.
+                // We will now create a message, and wait for the work
+                // result to be delivered.
+                let message = self
+                    .postbox
+                    .create_message::<proto::DeliverRequest>((token, work_reply.task_id))
+                    .await;
+
+                logger::trace!(
+                    "Waiting for message {key:?} to be delivered...",
+                    key = message.key()
+                );
+
+                // Wait for the message to be delivered.
+                message.wait_for(self.work_timeout).await?;
+
+                // Get the message body.
+                let inner: &proto::DeliverRequest = message.get_body()?;
+
+                if inner.success {
+                    // We have successfully received the work result.
+                    Ok((
+                        // Cloning is the easiest way here as `inner` is a reference.
+                        inner.worker.clone(),
+                        serde_json::from_str(inner.body.as_str())
+                            .map_err(|err| AntsError::InvalidWorkResult(err.to_string()))?,
+                    ))
+                } else {
+                    let error = format!(
+                        "Work result received, which reported that work failed on \
+                        node {} due to {}, trying next node.",
+                        &inner.worker, inner.error
+                    );
+                    logger::warn!("{}", &error);
+                    Err(AntsError::TaskExecutionError(error))
+                }
+            } else if work_reply.token != token {
+                logger::error!(
+                    "Work failed on node {} due to token mismatch, trying next node.",
+                    &work_reply.worker
+                );
+                Err(AntsError::ReservationTokenMismatch)
+            } else {
+                // The work failed due to some other reasons.
+                let error = format!(
+                    "Work failed on node {} due to {}, trying next node.",
+                    &work_reply.worker, work_reply.message
+                );
+
+                logger::error!("{}", &error);
+                Err(AntsError::WorkerError(error))
+            }
+        } else {
+            let exception =
+                result.expect_err("Unreachable: result is Err, but no error is present.");
+            logger::error!(
+                "Work request failed on node {}:{} due to {}, trying next node.",
+                address.0,
+                address.1,
+                &exception
+            );
+            Err(exception)
+        }
+    }
+
     /// Attempt to reserve itself and do work; if not possible, iterate
     /// through the nodes and attempt to reserve them and do work instead.
     pub async fn find_worker_and_work(&self, body: T) -> Result<(String, R), AntsError> {
@@ -484,99 +604,58 @@ where
             match self.reserve() {
                 Some(token) => {
                     return self
-                        .reserve_and_work(token, body)
+                        .do_work(token, body.clone())
                         .await
                         .map(|r| (self.name(), r))
                 }
                 None => {
                     // Make a named block to get a `Result`. Any `Err`s will immediately
                     // short circuit the block.
-                    let result: Result<_, AntsError> = '_get_result: {
-                        let (address, token) = self.reserve_node().await?;
+                    let (address, token) = self.reserve_next_node().await?;
 
-                        let mut client = self.build_client(address.clone()).await?;
-
-                        let reservation_result = tokio::select! {
-                            result = client.work(Request::new(proto::WorkRequest {
-                                token,
-                                body: serde_json::to_string(&body).map_err(
-                                    |err| AntsError::InvalidWorkData(err.to_string())
-                                )?,
-                                host: self.address.0.clone(),
-                                port: self.address.1 as u32,
-                            })) => { result.map_err(
-                                AntsError::Tonic
-                            ) }
-                            _ = tokio::time::sleep(self.work_timeout) => {
-                                Err(AntsError::ConnectionError(
-                                    address.0.clone(),
-                                    address.1,
-                                    format!("did not respond within {work_timeout:?}", work_timeout=self.work_timeout)
-                                ))
-                            },
-                        }?;
-
-                        Ok((token, reservation_result))
-                    };
-
-                    if let Ok((token, response)) = result {
-                        let work_reply = response.into_inner();
-                        if work_reply.success && work_reply.token == token {
-                            // We have successfully reserved and sent work to a node.
-                            // We will now create a message, and wait for the work
-                            // result to be delivered.
-                            let message = self
-                                .postbox
-                                .create_message::<proto::DeliverRequest>((
-                                    token,
-                                    work_reply.task_id,
-                                ))
-                                .await;
-
-                            logger::trace!(
-                                "Waiting for message {key:?} to be delivered...",
-                                key = message.key()
-                            );
-
-                            // Wait for the message to be delivered.
-                            message.wait_for(self.work_timeout).await?;
-
-                            // Get the message body.
-                            let inner: &proto::DeliverRequest = message.get_body()?;
-
-                            if inner.success {
-                                return Ok((
-                                    inner.worker.clone(),
-                                    serde_json::from_str(inner.body.as_str()).map_err(|err| {
-                                        AntsError::InvalidWorkResult(err.to_string())
-                                    })?,
-                                ));
-                            } else {
-                                logger::warn!(
-                                    "Work result received, which reported that work failed on \
-                                    node {} due to {}, trying next node.",
-                                    &inner.worker,
-                                    inner.error
-                                );
-                            }
-                        } else if work_reply.token != token {
-                            logger::error!(
-                                "Work failed on node {} due to token mismatch, trying next node.",
-                                &work_reply.worker
-                            );
-                        } else {
-                            logger::error!(
-                                "Work failed on node {} due to {}, trying next node.",
-                                &work_reply.worker,
-                                work_reply.message
-                            );
-                        }
-                    } else {
-                        logger::error!(
-                            "Work request failed on node due to {}, trying next node.",
-                            result.err().unwrap()
-                        );
+                    if let Ok((worker, result)) =
+                        self.do_work_on_remote(address, token, body.clone()).await
+                    {
+                        // We have successfully retrieved the work result from a node
+                        // and we can now return it.
+                        return Ok((worker, result));
                     }
+                    // If the work failed, we will try another node.
+                }
+            }
+        }
+    }
+
+    /// Attempt to reserve a random node, and do work. This will not prefer the
+    /// host node, but give equal chance to all nodes.
+    pub async fn find_random_worker_and_work(&self, body: T) -> Result<(String, R), AntsError> {
+        let mut rng = rand::thread_rng();
+        loop {
+            // Get a random node, including itself
+            let max_nodes = self.nodes.len().await + 1;
+            let random_node: usize = rng.gen_range(0..max_nodes);
+
+            if random_node == 0 {
+                // This is the host node.
+                if let Some(token) = self.reserve() {
+                    if let Ok(result) = self.do_work(token, body.clone()).await {
+                        return Ok((self.name(), result));
+                    }
+                } else {
+                    logger::debug!("Failed to reserve host node, trying remote nodes.")
+                }
+            } else {
+                // Get a random node from the list.
+                if let Some(checked_out_node) = self.nodes.checkout_random().await {
+                    let (address, token) = self.reserve_checked_out_node(checked_out_node).await?;
+                    if let Ok((worker, result)) =
+                        self.do_work_on_remote(address, token, body.clone()).await
+                    {
+                        // We have successfully retrieved the work result from a node
+                        // and we can now return it.
+                        return Ok((worker, result));
+                    }
+                    // If the work failed, we will try another node.
                 }
             }
         }
@@ -591,7 +670,7 @@ where
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone + 'static,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
     FO: std::future::Future<Output = Result<R, E>>
         + std::marker::Sync
@@ -649,7 +728,7 @@ where
 
 impl<T, R, F, FO, E> Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send,
     FO: std::future::Future<Output = Result<R, E>> + std::marker::Sync + std::marker::Send,
     F: Fn(T) -> FO + Copy, // Copy is required for the `Fn` trait.
@@ -697,7 +776,7 @@ where
 #[tonic::async_trait]
 impl<T, R, F, FO, E> WorkerAntServerTrait for Worker<T, R, F, FO, E>
 where
-    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
+    T: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + Clone + 'static,
     R: DeserializeOwned + Serialize + std::marker::Sync + std::marker::Send + 'static,
     FO: std::future::Future<Output = Result<R, E>>
         + std::marker::Sync
@@ -775,7 +854,7 @@ where
         Ok(Response::new(match parsed_body {
             Ok(body) => {
                 let _handle = tokio::spawn(async move {
-                    let result = arc_self.reserve_and_work(token, body).await;
+                    let result = arc_self.do_work(token, body).await;
                     let deliver_request = match result {
                         Ok(r) => serde_json::to_string(&r)
                             .map(|body| proto::DeliverRequest {
