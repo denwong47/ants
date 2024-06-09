@@ -42,21 +42,38 @@ impl PostBox {
     where
         T: MessageBodyTypeMarker,
     {
-        self.insert(T::create_message(identifier)).await
+        let message = T::create_message(identifier);
+        logger::trace!("Creating a message for {:?}...", message.key());
+
+        #[cfg(debug_assertions)]
+        let key = message.key();
+
+        let for_return = self.insert(message).await;
+
+        #[cfg(debug_assertions)]
+        assert!(self.get(&key).await.is_ok());
+
+        for_return
     }
 
     /// Add a [`MessageType`] to the postbox, and return the atomic reference to it.
     pub async fn insert(&self, message: MessageType) -> Arc<MessageType> {
         let mut messages = self.messages.write().await;
         let message_ref = Arc::new(message);
-        messages.insert(message_ref.key(), message_ref.clone());
-
-        message_ref
+        if let Some(message_existing) = messages.insert(message_ref.key(), message_ref.clone()) {
+            logger::warn!(
+                "Message with key {:?} already exists in the postbox.",
+                message_existing.key()
+            );
+            message_existing
+        } else {
+            message_ref
+        }
     }
 
     /// Get the atomic reference to a [`MessageType`] from the postbox by its key.
     ///
-    /// If the message is not found, this will return [G`None`].
+    /// If the message is not found, this will return [`None`].
     pub async fn get(&self, key: &MessageKey) -> Result<Arc<MessageType>, AntsError> {
         let messages = self.messages.read().await;
         messages
@@ -68,6 +85,7 @@ impl PostBox {
     /// Remove a [`MessageType`] from the postbox by its key.
     pub async fn remove(&self, key: &MessageKey) -> Option<Arc<MessageType>> {
         let mut messages = self.messages.write().await;
+        logger::trace!("Removing message with key {:?}...", key);
         messages.remove(key)
     }
 

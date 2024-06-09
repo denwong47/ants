@@ -28,7 +28,7 @@ pub async fn pow_2(input: u32) -> Result<u32, AntsError> {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_multi_nodes {
     use super::*;
 
     /// Test multiple nodes.
@@ -91,5 +91,96 @@ mod tests {
     #[serial_test::serial]
     async fn test_4_nodes() {
         test_multi_nodes(4).await;
+    }
+}
+
+#[cfg(test)]
+mod tests_random {
+    use super::*;
+    use std::collections::HashSet;
+
+    const WORKER_COUNT: usize = 8;
+
+    async fn test_random_checkout() -> Result<(), String> {
+        let workers = Worker::new_and_init_multiple(
+            WORKER_COUNT,
+            BASE_HOST.to_owned(),
+            BASE_PORT,
+            vec![], // Start with an empty list of nodes, let them discover each other.
+            config::DEFAULT_MULTICAST_HOST.to_owned(),
+            config::DEFAULT_MULTICAST_PORT,
+            pow_2,
+            WORK_TIMEOUT,
+        )
+        .await
+        .expect("Failed to create workers.");
+
+        let target_worker = Arc::clone(workers.first().unwrap());
+
+        tokio::time::sleep(WAIT_FOR_WORKER).await;
+
+        let results = futures::future::try_join_all((0..WORKER_COUNT).map(|id| {
+            let target_worker = Arc::clone(&target_worker);
+            async move {
+                target_worker
+                    .clone()
+                    .find_random_worker_and_work(id as u32)
+                    .await
+            }
+        }))
+        .await
+        .expect("Not all workers succeeded.");
+
+        let (is_sequential, _seen) = results.into_iter().zip(workers.iter()).fold(
+            (true, HashSet::with_capacity(WORKER_COUNT)),
+            |(acc, mut seen), ((worker_performed_work, _work_result), sequential_worker)| {
+                logger::debug!(
+                    "Worker {} performed work: {}",
+                    worker_performed_work,
+                    _work_result
+                );
+                if !seen.insert(worker_performed_work.clone()) {
+                    logger::warn!(
+                        "Worker {} performed work more than once.",
+                        worker_performed_work
+                    );
+                }
+                (
+                    acc && worker_performed_work == sequential_worker.name(),
+                    seen,
+                )
+            },
+        );
+
+        workers.into_iter().for_each(|worker| {
+            worker.teardown();
+        });
+
+        if is_sequential {
+            Err("Workers performed work in sequence.".to_owned())
+        } else if _seen.len() != WORKER_COUNT {
+            Err("Not all workers were used.".to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// This test is in its nature non-deterministic, as it relies on randomness to
+    /// not end up checking out workers in sequence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[serial_test::serial]
+    async fn test_random() {
+        const RETRIES: usize = 4;
+
+        for _ in 0..RETRIES {
+            match test_random_checkout().await {
+                Ok(_) => return,
+                Err(_err) => {
+                    logger::warn!("Retrying test: {}", _err);
+                }
+            }
+        }
+
+        panic!("Failed to pass test after {} retries.", RETRIES);
     }
 }

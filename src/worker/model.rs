@@ -647,15 +647,27 @@ where
             } else {
                 // Get a random node from the list.
                 if let Some(checked_out_node) = self.nodes.checkout_random().await {
-                    let (address, token) = self.reserve_checked_out_node(checked_out_node).await?;
-                    if let Ok((worker, result)) =
-                        self.do_work_on_remote(address, token, body.clone()).await
+                    #[cfg(feature = "debug")]
+                    let address = checked_out_node.address().clone();
+
+                    if let Ok((address, token)) =
+                        self.reserve_checked_out_node(checked_out_node).await
                     {
-                        // We have successfully retrieved the work result from a node
-                        // and we can now return it.
-                        return Ok((worker, result));
+                        if let Ok((worker, result)) =
+                            self.do_work_on_remote(address, token, body.clone()).await
+                        {
+                            // We have successfully retrieved the work result from a node
+                            // and we can now return it.
+                            return Ok((worker, result));
+                        }
+                        // If the work failed, we will try another node.
+                    } else {
+                        #[cfg(feature = "debug")]
+                        logger::debug!(
+                            "Failed to reserve random node at {:?}, trying another node.",
+                            address
+                        )
                     }
-                    // If the work failed, we will try another node.
                 }
             }
         }
